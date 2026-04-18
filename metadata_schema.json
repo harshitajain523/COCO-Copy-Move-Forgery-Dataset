@@ -1,0 +1,12 @@
+{
+  "name": "COCO-CMFD: Copy-Move Forgery Dataset",
+  "format": "csv",
+  "fields": [
+    { "name": "image_filename", "type": "string", "description": "E.g., '000000000074.jpg'" },
+    { "name": "mask_filename", "type": "string", "description": "E.g., '000000000074_mask.png'" },
+    { "name": "scale_factor", "type": "float", "description": "The randomized scaling multiplier applied." },
+    { "name": "rotation_angle", "type": "float", "description": "The randomized rotation applied in degrees." },
+    { "name": "source_bbox", "type": "tuple", "description": "Bounding box of the original object [x, y, w, h]." },
+    { "name": "target_bbox", "type": "tuple", "description": "Bounding box of the pasted object [x, y, w, h]." }
+  ]
+}
