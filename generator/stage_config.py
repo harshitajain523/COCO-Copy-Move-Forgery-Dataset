@@ -1,0 +1,228 @@
+"""
+Stage configuration presets for COCO-CMFD dataset generation.
+
+Stage 1 (clean):  Pure copy signal for contrastive pretraining.
+                  Zero post-processing. Paste-only blending.
+Stage 2 (synthetic): DeFaCTo-like synthetic complexity.
+                     Full post-processing. Mixed blending.
+
+Usage:
+    from stage_config import get_stage_config
+    cfg = get_stage_config("stage1")
+    generator = CopyMoveGenerator(**cfg.to_generator_kwargs(
+        output_dir_tampered="...",
+        output_dir_masks="...",
+    ))
+"""
+
+from dataclasses import dataclass, asdict
+
+
+@dataclass(frozen=True)
+class StageConfig:
+    """Immutable configuration preset for a generation stage."""
+
+    # ── Identity ─────────────────────────────────────────────
+    name: str
+    description: str
+
+    # ── Object selection ─────────────────────────────────────
+    min_area: int = 1000
+    max_area_ratio: float = 0.15
+    min_area_ratio: float = 0.02
+    max_target_area_ratio: float = 0.20
+    min_laplacian_var: float = 25.0
+    min_resolution: int = 400
+    min_target_compactness: float = 0.04
+
+    # ── Blending ─────────────────────────────────────────────
+    blend_mode: str = "paste"
+    feather_radius: int = 0
+
+    # ── Semantic placement ───────────────────────────────────
+    semantic_radius_px: int = 160
+    semantic_bg_color_thresh: float = 55.0
+    hsv_hist_intersect_thresh: float = 0.35
+    padding_px: int = 12
+
+    # ── Transforms ───────────────────────────────────────────
+    transform_policy: str = "coverage_like"
+    flip_prob: float = 0.5
+
+    # ── Retry budget ─────────────────────────────────────────
+    k_ann: int = 3
+    k_transform: int = 3
+    k_dest: int = 40
+
+    # ── Post-processing (global) ─────────────────────────────
+    jpeg_prob: float = 0.0
+    jpeg_quality_min: int = 65
+    jpeg_quality_max: int = 95
+    noise_prob: float = 0.0
+    noise_sigma_min: float = 1.5
+    noise_sigma_max: float = 8.0
+    bc_prob: float = 0.0
+    contrast_min: float = 0.85
+    contrast_max: float = 1.15
+    brightness_max_abs: int = 15
+    blur_prob: float = 0.0
+
+    # ── Patch-level photometric ──────────────────────────────
+    patch_hsv_shift_prob: float = 0.0
+    patch_v_min: float = 0.88
+    patch_v_max: float = 1.12
+    patch_s_min: float = 0.90
+    patch_s_max: float = 1.10
+
+    # ── Soft target mask ─────────────────────────────────────
+    soft_target_prob: float = 0.0
+    soft_sigma_min: float = 1.0
+    soft_sigma_max: float = 3.0
+    soft_alpha_min: float = 0.93
+    soft_alpha_max: float = 1.0
+
+    # ── Pipeline tunables ────────────────────────────────────
+    max_side: int = 800
+    num_images: int = 10
+    subset_size: int = 200
+    use_perspective_scale: bool = False
+    use_stuff_annotations: bool = False
+    use_supercategory_pool: bool = False
+
+    def to_generator_kwargs(self, output_dir_tampered, output_dir_masks):
+        """Convert to kwargs dict for CopyMoveGenerator.__init__."""
+        # Exclude pipeline-level fields that aren't generator params
+        exclude = {
+            "name", "description", "max_side", "num_images",
+            "subset_size", "use_perspective_scale",
+            "use_stuff_annotations", "use_supercategory_pool",
+        }
+        kwargs = {
+            k: v for k, v in asdict(self).items()
+            if k not in exclude
+        }
+        kwargs["output_dir_tampered"] = output_dir_tampered
+        kwargs["output_dir_masks"] = output_dir_masks
+        return kwargs
+
+
+# ── Stage Presets ────────────────────────────────────────────────
+
+STAGE1_CLEAN = StageConfig(
+    name="stage1_clean",
+    description=(
+        "Pure copy signal for contrastive pretraining. "
+        "Zero post-processing. The model learns what a copy IS."
+    ),
+    # Blending: hard paste only — no Poisson, no feathering
+    blend_mode="paste",
+    feather_radius=0,
+    # Transforms: mild affine (the copy should be recognisable)
+    transform_policy="coverage_like",
+    flip_prob=0.3,
+    # Post-processing: NONE — this is the whole point
+    jpeg_prob=0.0,
+    noise_prob=0.0,
+    bc_prob=0.0,
+    blur_prob=0.0,
+    patch_hsv_shift_prob=0.0,
+    soft_target_prob=0.0,
+    # Semantic placement enhancements
+    use_perspective_scale=True,
+    use_stuff_annotations=True,
+    use_supercategory_pool=True,
+    # Retry budget: higher for clean data (more selective)
+    k_ann=5,
+    k_transform=4,
+    k_dest=50,
+    # Pipeline
+    num_images=10,
+    subset_size=500,
+    max_side=0,  # No downscale — keep original resolution
+)
+
+
+STAGE2_SYNTHETIC = StageConfig(
+    name="stage2_synthetic",
+    description=(
+        "DeFaCTo-like synthetic complexity. Full post-processing. "
+        "Teaches the model that copies can be damaged."
+    ),
+    # Blending: paste only (Poisson hides too much for training)
+    blend_mode="paste",
+    feather_radius=3,
+    # Transforms: aggressive
+    transform_policy="full_aug",
+    flip_prob=0.5,
+    # Post-processing: full suite
+    jpeg_prob=0.7,
+    jpeg_quality_min=60,
+    jpeg_quality_max=95,
+    noise_prob=0.4,
+    noise_sigma_min=1.5,
+    noise_sigma_max=10.0,
+    bc_prob=0.35,
+    contrast_min=0.80,
+    contrast_max=1.20,
+    brightness_max_abs=20,
+    blur_prob=0.25,
+    # Patch photometric: stronger shifts
+    patch_hsv_shift_prob=0.5,
+    patch_v_min=0.80,
+    patch_v_max=1.20,
+    patch_s_min=0.85,
+    patch_s_max=1.15,
+    soft_target_prob=0.0,
+    # Semantic placement enhancements
+    use_perspective_scale=True,
+    use_stuff_annotations=True,
+    use_supercategory_pool=True,
+    # Retry budget
+    k_ann=5,
+    k_transform=5,
+    k_dest=50,
+    # Pipeline
+    num_images=10,
+    subset_size=500,
+    max_side=0,  # Keep original resolution
+)
+
+
+# ── Registry ────────────────────────────────────────────────────
+
+_STAGES = {
+    "stage1": STAGE1_CLEAN,
+    "stage1_clean": STAGE1_CLEAN,
+    "stage2": STAGE2_SYNTHETIC,
+    "stage2_synthetic": STAGE2_SYNTHETIC,
+}
+
+
+def get_stage_config(stage_name, **overrides):
+    """
+    Retrieve a stage configuration by name with optional overrides.
+
+    Parameters
+    ----------
+    stage_name : str
+        One of 'stage1', 'stage1_clean', 'stage2', 'stage2_synthetic'.
+    **overrides
+        Any field to override in the preset.
+
+    Returns
+    -------
+    StageConfig
+        Frozen dataclass with the resolved configuration.
+    """
+    if stage_name not in _STAGES:
+        valid = ", ".join(sorted(_STAGES.keys()))
+        raise ValueError(
+            f"Unknown stage '{stage_name}'. Valid: {valid}"
+        )
+    base = _STAGES[stage_name]
+    if not overrides:
+        return base
+    # Create new instance with overrides applied
+    fields = asdict(base)
+    fields.update(overrides)
+    return StageConfig(**fields)
