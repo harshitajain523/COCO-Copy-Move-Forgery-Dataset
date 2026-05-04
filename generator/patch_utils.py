@@ -4,6 +4,14 @@ Patch-level utility functions for MemoryForger architecture alignment.
 Provides patch tokenization, label generation, and image padding
 so that the dataset outputs are directly consumable by the
 InfoNCE contrastive training pipeline.
+
+Design note (F3 — Strict Purity):
+    trimap_to_patch_labels now uses a 100%-purity rule.
+    Any patch that is not completely homogeneous (all background,
+    all source, or all target) is labeled -1 (ignore).  This
+    prevents the CNN from using the jagged copy-move boundary as a
+    shortcut in the InfoNCE loss — the model is forced to inspect
+    deep interior statistics instead of high-frequency edge cues.
 """
 
 import numpy as np
@@ -58,11 +66,26 @@ def trimap_to_patch_labels(trimap, patch_size=16):
     """
     Convert a pixel-level trimap to patch-level labels.
 
-    Each patch is classified based on majority vote of its pixels:
-    - 0 = background patch (clean)
-    - 1 = source patch (>50% source pixels, value 128)
-    - 2 = target patch (>50% target pixels, value 255)
-    - 3 = mixed/boundary (ambiguous — exclude from contrastive loss)
+    STRICT 100%-PURITY RULE (F3):
+    A patch is labeled only if *every* pixel in the patch belongs
+    to the same class.  Mixed patches (any combination of values)
+    receive label -1 and are excluded from the InfoNCE contrastive
+    loss.  This eliminates the boundary-cheat shortcut for the CNN.
+
+    Label mapping:
+        -1 = ignore  (boundary / mixed — excluded from loss)
+         0 = background  (100% value-0 pixels)
+         1 = source       (100% value-128 pixels)
+         2 = target       (100% value-255 pixels)
+
+    Why 100% purity instead of majority vote?
+    -----------------------------------------
+    A patch containing even ONE boundary pixel carries the jagged
+    copy-move edge as a high-frequency feature.  The InfoNCE loss
+    will exploit this shortcut because it has a lower gradient cost
+    than learning the color/texture prior.  By making the threshold
+    binary (all-or-nothing) we ensure the model only sees clean,
+    uncontaminated interior patches during training.
 
     Parameters
     ----------
@@ -74,13 +97,16 @@ def trimap_to_patch_labels(trimap, patch_size=16):
     Returns
     -------
     np.ndarray
-        (N_h, N_w) uint8 patch label grid.
+        (N_h, N_w) int8 patch label grid.
+        Values: -1 (ignore), 0 (bg), 1 (source), 2 (target).
     """
     h, w = trimap.shape[:2]
     n_h = h // patch_size
     n_w = w // patch_size
     total_pixels = patch_size * patch_size
-    labels = np.zeros((n_h, n_w), dtype=np.int8)
+
+    # Use int8 to accommodate -1 (ignore) label
+    labels = np.full((n_h, n_w), fill_value=-1, dtype=np.int8)
 
     for i in range(n_h):
         for j in range(n_w):
@@ -88,16 +114,19 @@ def trimap_to_patch_labels(trimap, patch_size=16):
                 i * patch_size:(i + 1) * patch_size,
                 j * patch_size:(j + 1) * patch_size,
             ]
-            src_frac = float((patch == 128).sum()) / total_pixels
-            tgt_frac = float((patch == 255).sum()) / total_pixels
 
-            if tgt_frac > 0.5:
-                labels[i, j] = 2  # target
-            elif src_frac > 0.5:
-                labels[i, j] = 1  # source
-            elif src_frac + tgt_frac > 0.1:
-                labels[i, j] = -1  # mixed boundary — skip in loss
-            # else: 0 = clean background
+            bg_count = int((patch == 0).sum())
+            src_count = int((patch == 128).sum())
+            tgt_count = int((patch == 255).sum())
+
+            # Label only perfectly homogeneous patches
+            if bg_count == total_pixels:
+                labels[i, j] = 0   # clean background
+            elif src_count == total_pixels:
+                labels[i, j] = 1   # pure source interior
+            elif tgt_count == total_pixels:
+                labels[i, j] = 2   # pure target interior
+            # else: -1 (ignore) — boundary or mixed patch
 
     return labels
 
@@ -134,6 +163,7 @@ def get_patch_statistics(labels):
     bg_count = int((labels == 0).sum())
     src_count = int((labels == 1).sum())
     tgt_count = int((labels == 2).sum())
+    # -1 encodes as 255 in uint8 but we use int8 here directly
     mix_count = int((labels == -1).sum())
 
     return {
@@ -144,4 +174,5 @@ def get_patch_statistics(labels):
         "boundary_patches": mix_count,
         "source_fraction": round(src_count / max(total, 1), 4),
         "target_fraction": round(tgt_count / max(total, 1), 4),
+        "ignore_fraction": round(mix_count / max(total, 1), 4),
     }

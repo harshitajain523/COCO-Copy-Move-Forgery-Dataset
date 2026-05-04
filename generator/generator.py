@@ -1,5 +1,4 @@
 import cv2
-import itertools
 import json
 import logging
 import numpy as np
@@ -16,6 +15,13 @@ from scene_layout import (
 from patch_utils import pad_to_patch_grid, trimap_to_patch_labels
 
 logger = logging.getLogger(__name__)
+
+# ── Project-root-relative SAM mask directory ─────────────────────
+# Resolved at import time so it is correct regardless of cwd.
+# Must match precompute_sam_masks.SAM_MASKS_ROOT.
+_GEN_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_GEN_DIR)
+SAM_MASKS_ROOT = os.path.join(_PROJECT_ROOT, "output", "sam_masks")
 
 class CopyMoveGenerator:
     def __init__(
@@ -135,8 +141,26 @@ class CopyMoveGenerator:
             os.makedirs(d, exist_ok=True)
 
     def extract_object_patch(self, img, ann, coco):
-        """Extract the cropped RGB patch, cropped binary mask, bbox, and full binary mask."""
-        full_mask = coco.annToMask(ann)
+        """Extract the cropped RGB patch, cropped binary mask, bbox, and full binary mask.
+
+        F5 fix: SAM mask path is resolved against SAM_MASKS_ROOT
+        (an absolute, project-root-relative constant) so the lookup
+        is correct regardless of the calling process's cwd.
+        """
+        # F5: use absolute path constant instead of bare relative string
+        sam_path = os.path.join(
+            SAM_MASKS_ROOT,
+            f"{ann['image_id']}_{ann['id']}.png",
+        )
+        is_sam = False
+        if os.path.exists(sam_path):
+            full_mask_raw = cv2.imread(sam_path, cv2.IMREAD_GRAYSCALE)
+            if full_mask_raw is not None:
+                full_mask = full_mask_raw
+                is_sam = True
+        else:
+            full_mask = coco.annToMask(ann)
+
         x, y, w, h = map(int, ann['bbox'])
         
         # Safety checks
@@ -158,7 +182,7 @@ class CopyMoveGenerator:
 
         # Refine coarse COCO polygon boundaries using GrabCut
         # This removes the "blocky" background chunks from the object mask.
-        if cropped_mask_bin.shape[0] > 10 and cropped_mask_bin.shape[1] > 10:
+        if not is_sam and cropped_mask_bin.shape[0] > 10 and cropped_mask_bin.shape[1] > 10:
             gc_mask = np.where(cropped_mask_bin > 0, cv2.GC_PR_FGD, cv2.GC_BGD).astype(np.uint8)
             # Create a "sure foreground" core by eroding the mask
             kernel = np.ones((5,5), np.uint8)
@@ -178,6 +202,17 @@ class CopyMoveGenerator:
                     full_mask_bin[y:y+h, x:x+w] = refined_mask
             except Exception:
                 pass
+
+        contours, hierarchy = cv2.findContours(cropped_mask_bin, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        if hierarchy is not None:
+            for i in range(len(contours)):
+                if hierarchy[0][i][3] != -1:
+                    cv2.drawContours(cropped_mask_bin, contours, i, 1, -1)
+                    cv2.drawContours(full_mask_bin[y:y+h, x:x+w], contours, i, 1, -1)
+
+        h_img, w_img = img.shape[:2]
+        if x <= 5 or y <= 5 or (x + w) >= (w_img - 5) or (y + h) >= (h_img - 5):
+            return None, None, None
 
         return (cropped_img, cropped_mask_bin), (x, y, w, h), full_mask_bin
 
@@ -523,32 +558,10 @@ class CopyMoveGenerator:
         return overlap / total_paste
 
     def _apply_patch_hsv_shift(self, obj_bgr):
-        if random.random() >= self.patch_hsv_shift_prob:
-            return obj_bgr
-        hsv = cv2.cvtColor(obj_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
-        hsv[:, :, 2] *= random.uniform(self.patch_v_min, self.patch_v_max)
-        hsv[:, :, 1] *= random.uniform(self.patch_s_min, self.patch_s_max)
-        hsv = np.clip(hsv, 0, 255).astype(np.uint8)
-        return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        return obj_bgr # strict purity
 
     def _post_process_composite(self, img_bgr):
-        out = img_bgr
-        if random.random() < self.jpeg_prob:
-            q = random.randint(self.jpeg_quality_min, self.jpeg_quality_max)
-            _, enc = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, int(q)])
-            out = cv2.imdecode(enc, cv2.IMREAD_COLOR)
-        if random.random() < self.noise_prob:
-            sigma = random.uniform(self.noise_sigma_min, self.noise_sigma_max)
-            noise = np.random.normal(0, sigma, out.shape).astype(np.float32)
-            out = np.clip(out.astype(np.float32) + noise, 0, 255).astype(np.uint8)
-        if random.random() < self.bc_prob:
-            alpha = random.uniform(self.contrast_min, self.contrast_max)
-            beta = random.randint(-abs(self.brightness_max_abs), abs(self.brightness_max_abs))
-            out = np.clip(alpha * out.astype(np.float32) + beta, 0, 255).astype(np.uint8)
-        if random.random() < self.blur_prob:
-            k = random.choice([3, 5])
-            out = cv2.GaussianBlur(out, (k, k), 0)
-        return out
+        return img_bgr # strict purity
 
     def _make_soft_target(self, target_mask_u8_0_1):
         if random.random() >= self.soft_target_prob:
@@ -726,25 +739,48 @@ class CopyMoveGenerator:
                         (int(cx + jx), int(cy + jy))
                     )
 
-            # Category-aware vertical band
-            ground_like = {
-                1, 2, 3, 4, 6, 7, 8, 16, 17, 18, 19, 20
-            }
-            def _vertical_ok(cy):
-                if src_cat in ground_like:
-                    return abs(cy - src_center_y) <= 0.20 * h_img
-                return True
+            # F4: 3-tier relaxation ladder for vertical placement.
+            # Tier 1 (strict): +-15% of src_center_y
+            # Tier 2 (relaxed): +-30% of src_center_y
+            # Tier 3 (permissive): no vertical constraint
+            # Metadata records which tier was accepted.
+            _HORIZ_TIERS = [
+                ("strict",     0.15),
+                ("relaxed",    0.30),
+                ("permissive", None),
+            ]
 
             for _ in range(max(1, self.k_transform)):
                 scale_factor, rotation_angle, do_flip = self._sample_transform()
 
-                # Activating Depth Realism: Calculate perspective scale dynamically
+                # F1 + Depth Realism: compute perspective scale then hard-gate
+                # on minimum pixel area to reject invisible/floating objects.
                 if use_perspective_scale:
                     if candidate_centers:
                         approx_dst_cy = random.choice(candidate_centers)[1]
                     else:
-                        approx_dst_cy = random.randint(h_img // 4, h_img - h_img // 4)
-                    scale_factor = self.perspective_scale(src_center_y, approx_dst_cy, h_img)
+                        approx_dst_cy = random.randint(
+                            h_img // 4, h_img - h_img // 4
+                        )
+                    scale_factor = self.perspective_scale(
+                        src_center_y, approx_dst_cy, h_img
+                    )
+
+                    # F1 HARD GATE: estimate post-scale area.  If the
+                    # perspective reduction makes the object smaller than
+                    # min_area pixels, skip this transform — it would
+                    # produce an invisible or anomalously tiny object.
+                    estimated_area = (
+                        float(ann.get("area", 1)) * scale_factor ** 2
+                    )
+                    if estimated_area < self.min_area:
+                        last_skip = "SKIP: perspective_scale_too_small"
+                        logger.debug(
+                            "Skipping: perspective scale %.2f → "
+                            "estimated_area %.0f < min_area %d",
+                            scale_factor, estimated_area, self.min_area,
+                        )
+                        continue
 
                 # Padding around crop before warp.
                 pad = max(0, self.padding_px)
@@ -816,28 +852,70 @@ class CopyMoveGenerator:
                         last_skip = "SKIP: mask_touches_patch_border"
                         continue
 
-                # Destination search (semantic-first then random)
-                def _iter_centers():
-                    for c in candidate_centers:
-                        yield c
-                    while True:
-                        yield (
-                            random.randint(
-                                pat_w // 2, w_img - pat_w // 2
-                            ),
-                            random.randint(
-                                pat_h // 2, h_img - pat_h // 2
-                            ),
-                        )
-
                 placed = False
-                dest_candidates = list(
-                    itertools.islice(_iter_centers(), max(1, self.k_dest))
-                )
+
+                # STRICT PLACEMENT: Boolean Cross-Correlation
+                # F4: Run the cross-correlation with the tightest horizon
+                # first. If no valid spots are found, relax progressively
+                # through the _HORIZ_TIERS ladder defined above.
+                M_base = np.ones((h_img, w_img), dtype=np.float32)
+                # Exclude ALL other COCO annotations
+                M_base[exclusion_mask > 0] = 0.0
+                # Exclude the source donor mask
+                M_base[src_mask_full > 0] = 0.0
+
+                # Semantic Lock (M_stuff)
+                if surface_map is not None:
+                    src_stuff_mask = get_dominant_surface(
+                        surface_map, src_x, src_y, src_w, src_h
+                    )
+                    if src_stuff_mask > 0:
+                        M_base[surface_map != src_stuff_mask] = 0.0
+
+                # F4: Try each relaxation tier in order
+                dest_candidates = []
+                accepted_horiz_tier = "none"
+                kernel = obj_mask_bin.astype(np.float32)
+                kernel_sum = float(np.sum(kernel))
+
+                for _tier_name, _band_frac in _HORIZ_TIERS:
+                    M_available = M_base.copy()
+                    if _band_frac is not None:
+                        # Apply horizon band mask
+                        horizon_mask = np.zeros(
+                            (h_img, w_img), dtype=np.float32
+                        )
+                        y_min = max(
+                            0, int(src_center_y - _band_frac * h_img)
+                        )
+                        y_max = min(
+                            h_img,
+                            int(src_center_y + _band_frac * h_img),
+                        )
+                        horizon_mask[y_min:y_max, :] = 1.0
+                        M_available *= horizon_mask
+
+                    # Boolean cross-correlation
+                    corr = cv2.matchTemplate(
+                        M_available, kernel, cv2.TM_CCORR
+                    )
+                    valid_spots = np.where(corr >= kernel_sum - 1e-4)
+
+                    if len(valid_spots[0]) > 0:
+                        indices = list(zip(valid_spots[1], valid_spots[0]))
+                        random.shuffle(indices)
+                        for tx, ty in indices[:max(1, self.k_dest)]:
+                            dst_cx = int(tx + pat_w / 2)
+                            dst_cy = int(ty + pat_h / 2)
+                            dest_candidates.append((dst_cx, dst_cy))
+                        accepted_horiz_tier = _tier_name
+                        logger.debug(
+                            "Horizon tier '%s' yielded %d candidates",
+                            _tier_name, len(dest_candidates),
+                        )
+                        break  # stop relaxing once we have candidates
 
                 for (dst_cx, dst_cy) in dest_candidates:
-                    if not _vertical_ok(dst_cy):
-                        continue
                     dst_cx = self._clamp(
                         dst_cx, pat_w // 2, w_img - pat_w // 2
                     )
@@ -846,6 +924,18 @@ class CopyMoveGenerator:
                     )
                     dst_x = dst_cx - pat_w // 2
                     dst_y = dst_cy - pat_h // 2
+
+                    # F2: Canvas-clipping prevention.
+                    # A destination box within 10px of any image edge produces
+                    # an artificial straight line that the CNN uses as a cheat.
+                    _EDGE_PAD = 10
+                    if (
+                        dst_x < _EDGE_PAD
+                        or dst_y < _EDGE_PAD
+                        or dst_x + pat_w > w_img - _EDGE_PAD
+                        or dst_y + pat_h > h_img - _EDGE_PAD
+                    ):
+                        continue
 
                     # Surface compatibility check
                     if surface_map is not None:
@@ -934,40 +1024,13 @@ class CopyMoveGenerator:
 
                     # ── Compose ──────────────────────────────
                     mixed_clone = img.copy()
-                    if self.blend_mode == "poisson":
-                        try:
-                            mixed_clone = cv2.seamlessClone(
-                                obj_rgb, img, blend_mask,
-                                (dst_cx, dst_cy),
-                                cv2.NORMAL_CLONE,
-                            )
-                        except Exception:
-                            last_skip = "SKIP: poisson_failed"
-                            continue
-                    else:
-                        alpha = obj_alpha
-                        if self.feather_radius > 0:
-                            alpha = self._alpha_feather(
-                                alpha, self.feather_radius
-                            )
-                        alpha_f = (
-                            alpha.astype(np.float32) / 255.0
-                        )[..., None]
-                        roi = mixed_clone[
-                            y1:y2, x1:x2
-                        ].astype(np.float32)
-                        src_f = obj_rgb.astype(np.float32)
-                        mixed = (
-                            src_f * alpha_f
-                            + roi * (1.0 - alpha_f)
-                        )
-                        mixed_clone[y1:y2, x1:x2] = \
-                            mixed.astype(np.uint8)
-
-                    # Global post-processing
-                    mixed_clone = self._post_process_composite(
-                        mixed_clone
-                    )
+                    
+                    # STRICT FORENSIC PURITY: Absolute Pixel-to-Pixel Paste
+                    # Zero Poisson, Zero Blending, Zero Feathering.
+                    roi = mixed_clone[y1:y2, x1:x2]
+                    # Direct boolean pixel copy
+                    roi[obj_mask_bin > 0] = obj_rgb[obj_mask_bin > 0]
+                    mixed_clone[y1:y2, x1:x2] = roi
 
                     # ── Tri-map ──────────────────────────────
                     tri_map = np.zeros(
@@ -1103,6 +1166,9 @@ class CopyMoveGenerator:
                         'source_category_name': cat_name,
                         'source_supercategory': supercat,
                         'placement_tier': placement_tier,
+                        # F4: horizon tier used (strict/relaxed/permissive)
+                        # for downstream quality filtering of the CSV.
+                        'horizon_tier': accepted_horiz_tier,
                         'same_cat_instance_count': same_cat_count,
                         'source_texture_var': round(src_tex, 2),
                         'dest_texture_var': round(dst_tex, 2),

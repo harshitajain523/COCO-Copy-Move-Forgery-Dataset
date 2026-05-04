@@ -406,7 +406,39 @@ def visualize_stage(stage_output, max_samples=10):
     )
 
 
-# ── Example: run both stages ────────────────────────────────────
+def example_improved_generation(num_images=20):
+    """
+    Generate samples using all branch improvements and visualise.
+
+    Active fixes in this run
+    ------------------------
+    F1  Perspective-scale hard gate: objects that shrink below
+        min_area after depth scaling are skipped.
+    F2  Canvas-clipping prevention: destinations within 10px of
+        any image edge are rejected.
+    F3  Strict 100%-purity patch labels: boundary patches get
+        label -1 (ignore), never used in InfoNCE loss.
+    F4  3-tier horizon relaxation ladder: strict → relaxed →
+        permissive, so fewer valid images are wasted.
+    F5  Absolute SAM mask path: SAM lookup is cwd-independent.
+
+    Parameters
+    ----------
+    num_images : int
+        Number of forged images to generate (default 20).
+
+    Returns
+    -------
+    list
+        List of metadata dicts for successfully generated images.
+    """
+    successes, stage_output = run_stage(
+        "stage1", num_images=num_images
+    )
+    visualize_stage(stage_output, max_samples=num_images)
+    return successes
+
+
 def example_stage1_generation(num_images=10):
     """Generate Stage 1 (clean) samples and visualise."""
     successes, stage_output = run_stage(
@@ -427,12 +459,13 @@ def example_stage2_generation(num_images=10):
 
 # ── Main entry point ─────────────────────────────────────────────
 def main():
-    """Entry point: generate samples for both stages."""
-    logger.info("COCO-CMFD Stage-Aware Pipeline")
-    logger.info("Generating 10 samples per stage for sanity check")
-
-    example_stage1_generation(num_images=10)
-    example_stage2_generation(num_images=10)
+    """Entry point: generate 20 improved samples for visual QA."""
+    logger.info("COCO-CMFD improved-placement-v2 branch")
+    logger.info(
+        "Fixes: F1 persp-gate, F2 canvas-clip, F3 strict-patches, "
+        "F4 horiz-ladder, F5 abs-SAM-path"
+    )
+    example_improved_generation(num_images=20)
 
 
 if __name__ == "__main__":

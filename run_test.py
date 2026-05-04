@@ -6,13 +6,19 @@ log = logging.getLogger()
 from pycocotools.coco import COCO
 from generator import CopyMoveGenerator
 from stage_config import get_stage_config
+from datetime import datetime
 import pandas as pd
 
 cfg = get_stage_config('stage1', max_side=0, k_dest=30, k_ann=2)
 sd = 'output/stage1_clean'
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+run_dir = os.path.join(sd, f"run_{timestamp}")
+os.makedirs(os.path.join(run_dir, 'tampered'), exist_ok=True)
+os.makedirs(os.path.join(run_dir, 'masks'), exist_ok=True)
+
 gen = CopyMoveGenerator(**cfg.to_generator_kwargs(
-    output_dir_tampered=os.path.join(sd,'tampered'),
-    output_dir_masks=os.path.join(sd,'masks')))
+    output_dir_tampered=os.path.join(run_dir,'tampered'),
+    output_dir_masks=os.path.join(run_dir,'masks')))
 
 coco = COCO(os.path.join(sd, 'annotations_subset.json'))
 try:
