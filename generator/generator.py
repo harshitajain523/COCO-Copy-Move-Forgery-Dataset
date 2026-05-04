@@ -318,28 +318,37 @@ class CopyMoveGenerator:
         Adjust scale factor based on vertical position delta.
 
         Objects lower in frame = closer to camera = larger.
-        Objects higher in frame = farther = smaller.
+        Objects higher in frame = farther away = smaller.
+
+        BUG FIX (was inverted): the original formula used
+        ``(src_y - dst_y)`` which made objects *larger* when placed
+        higher in the frame.  The correct sign is ``(dst_y - src_y)``:
+        positive when the destination is below the source (closer →
+        bigger), negative when the destination is above (farther →
+        smaller).
 
         Parameters
         ----------
         src_y : float
-            Source object center Y coordinate.
+            Source object center Y coordinate (pixels from top).
         dst_y : float
-            Destination center Y coordinate.
+            Destination center Y coordinate (pixels from top).
         h_img : int
-            Image height.
+            Image height in pixels.
         base_range : tuple
-            (min_scale, max_scale) for random jitter.
+            (min_scale, max_scale) for random perceptual jitter.
 
         Returns
         -------
         float
             Perspective-corrected scale factor.
         """
-        delta = (src_y - dst_y) / max(h_img, 1)
+        # Positive delta → destination is LOWER (closer) → scale up.
+        # Negative delta → destination is HIGHER (farther) → scale down.
+        delta = (dst_y - src_y) / max(h_img, 1)
         perspective_factor = 1.0 + 0.5 * delta
         jitter = random.uniform(base_range[0], base_range[1])
-        return float(np.clip(perspective_factor * jitter, 0.7, 1.4))
+        return float(np.clip(perspective_factor * jitter, 0.55, 1.45))
 
     @staticmethod
     def get_supercategory_pool(annotations, source_ann, coco):
@@ -739,6 +748,32 @@ class CopyMoveGenerator:
                         (int(cx + jx), int(cy + jy))
                     )
 
+            # ── Floating-object prevention constants ─────────────────────
+            # Ground-type COCO category IDs: people, vehicles, animals,
+            # kitchen items, food, furniture — anything that should never
+            # appear floating in the sky.  Flying categories (bird=16,
+            # airplane=5, kite=38) are explicitly excluded from this list.
+            _GROUND_CATS = {
+                1,   # person
+                2, 3, 4, 6, 7, 8,    # bicycle, car, motorcycle, bus, train, truck
+                9, 10, 11,            # boat, traffic light, fire hydrant
+                13, 14, 15,           # stop sign, parking meter, bench
+                17, 18, 19, 20, 21, 22, 23, 24, 25,  # animals (cat→bear)
+                27, 28,              # backpack, umbrella
+                31, 32, 33,          # handbag, tie, suitcase
+                39, 40, 41, 42, 43,  # bottle, wine glass, cup, fork, knife
+                44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55,  # spoon→sandwich
+                56, 57, 58, 59, 60,  # broccoli→hot dog
+                61, 62, 63, 64, 65,  # pizza→cake
+                67, 70,              # chair, toilet
+                72, 73, 74, 75, 76, 77, 78, 79, 80,  # tv→scissors
+                81, 82, 84, 85, 86, 87, 88, 89, 90,  # hair drier→toothbrush
+            }
+            # Absolute Y-floor for ground objects:
+            # destination center must be at or below 40% from top.
+            # This is ~the horizon line in a typical outdoor photo.
+            _ABS_Y_FLOOR = int(0.40 * h_img)
+
             # F4: 3-tier relaxation ladder for vertical placement.
             # Tier 1 (strict): +-15% of src_center_y
             # Tier 2 (relaxed): +-30% of src_center_y
@@ -779,6 +814,19 @@ class CopyMoveGenerator:
                             "Skipping: perspective scale %.2f → "
                             "estimated_area %.0f < min_area %d",
                             scale_factor, estimated_area, self.min_area,
+                        )
+                        continue
+
+                    # FLOATING FIX (abs Y-floor): for ground-type objects,
+                    # the approximate destination must be at or below the
+                    # 40% mark (the horizon floor).  This catches the case
+                    # where perspective_scale correctly shrinks the object
+                    # but the chosen approx_dst_cy is still in sky territory.
+                    if src_cat in _GROUND_CATS and approx_dst_cy < _ABS_Y_FLOOR:
+                        last_skip = "SKIP: ground_object_above_horizon"
+                        logger.debug(
+                            "Skipping: ground cat %d dst_cy=%d < floor=%d",
+                            src_cat, approx_dst_cy, _ABS_Y_FLOOR,
                         )
                         continue
 
@@ -935,6 +983,14 @@ class CopyMoveGenerator:
                         or dst_x + pat_w > w_img - _EDGE_PAD
                         or dst_y + pat_h > h_img - _EDGE_PAD
                     ):
+                        continue
+
+                    # FLOATING FIX — final gate (exact dst_cy).
+                    # Even if the cross-correlation found a spot that
+                    # passes the horizon band, the actual dst_cy after
+                    # clamping may still be above the horizon floor for
+                    # ground-type objects.  Reject unconditionally.
+                    if src_cat in _GROUND_CATS and dst_cy < _ABS_Y_FLOOR:
                         continue
 
                     # Surface compatibility check
