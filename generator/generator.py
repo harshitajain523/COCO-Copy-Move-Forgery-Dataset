@@ -752,7 +752,7 @@ class CopyMoveGenerator:
             # Ground-type COCO category IDs: people, vehicles, animals,
             # kitchen items, food, furniture — anything that should never
             # appear floating in the sky.  Flying categories (bird=16,
-            # airplane=5, kite=38) are explicitly excluded from this list.
+            # airplane=5, kite=38) are explicitly excluded.
             _GROUND_CATS = {
                 1,   # person
                 2, 3, 4, 6, 7, 8,    # bicycle, car, motorcycle, bus, train, truck
@@ -769,10 +769,25 @@ class CopyMoveGenerator:
                 72, 73, 74, 75, 76, 77, 78, 79, 80,  # tv→scissors
                 81, 82, 84, 85, 86, 87, 88, 89, 90,  # hair drier→toothbrush
             }
-            # Absolute Y-floor for ground objects:
-            # destination center must be at or below 40% from top.
-            # This is ~the horizon line in a typical outdoor photo.
-            _ABS_Y_FLOOR = int(0.40 * h_img)
+
+            # Category-specific Y-floors (pixels from top must be ABOVE
+            # this value for the destination center to be valid).
+            # Rationale: vehicles and large animals sit firmly on the ground
+            # and the sky in outdoor scenes often fills the top 50%+ of frame.
+            # A single 40% threshold is too permissive for trains/cars.
+            _VEHICLE_CATS = {2, 3, 4, 6, 7, 8}   # bicycle→truck
+            _LARGE_ANIMAL_CATS = {22, 23, 24, 25}  # elephant, bear, zebra, giraffe
+
+            if src_cat in _VEHICLE_CATS:
+                # Vehicles are always firmly on the ground: 55% floor
+                _ABS_Y_FLOOR = int(0.55 * h_img)
+            elif src_cat in _LARGE_ANIMAL_CATS:
+                # Large animals also need a tighter constraint: 50%
+                _ABS_Y_FLOOR = int(0.50 * h_img)
+            else:
+                # People, food, small objects, furniture: 42% floor
+                # (slightly tighter than the previous 40%)
+                _ABS_Y_FLOOR = int(0.42 * h_img)
 
             # F4: 3-tier relaxation ladder for vertical placement.
             # Tier 1 (strict): +-15% of src_center_y
@@ -999,8 +1014,21 @@ class CopyMoveGenerator:
                             surface_map,
                             dst_x, dst_y, pat_w, pat_h,
                         )
+                        # Primary surface compatibility check
                         if not is_surface_compatible(
                             src_surface, dst_surface
+                        ):
+                            continue
+                        # Non-permissive fallback: even if the destination
+                        # pixel is unlabeled (code 0 = other), a ground-type
+                        # object must not be placed in the top 50% of the
+                        # image when stuff_coco IS available.  This closes
+                        # the 'other=compatible-with-anything' bypass that
+                        # allows trains to land on unlabeled sky.
+                        if (
+                            dst_surface == 0
+                            and src_cat in _GROUND_CATS
+                            and dst_cy < int(0.50 * h_img)
                         ):
                             continue
                     elif stuff_coco is None and src_surface > 0:

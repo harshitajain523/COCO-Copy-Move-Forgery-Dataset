@@ -33,7 +33,10 @@ class StageConfig:
     max_target_area_ratio: float = 0.20
     min_laplacian_var: float = 25.0
     min_resolution: int = 400
-    min_target_compactness: float = 0.04
+    # Compactness floor raised from 0.04 to 0.07:
+    # a value of 0.04 allowed GrabCut-trimmed torso fragments
+    # (very jagged, low isoperimetric ratio) to pass through.
+    min_target_compactness: float = 0.07
 
     # ── Blending ─────────────────────────────────────────────
     blend_mode: str = "paste"
