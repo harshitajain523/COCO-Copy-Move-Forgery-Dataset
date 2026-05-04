@@ -705,6 +705,22 @@ class CopyMoveGenerator:
                 last_skip = "SKIP: tamper_too_small"
                 continue
 
+            # Semantic Integrity Filter 4: Spatial Isolation
+            # Objects that touch other annotations are usually occluded
+            # (e.g., person riding a horse, baby on dad's shoulders,
+            # or a person holding a tennis racket). We dilate the source
+            # mask by 5 pixels and ensure it does NOT intersect with any
+            # other annotation in the image. This guarantees we only copy
+            # visually complete, standalone objects.
+            hard_neg_mask = self.build_hard_negative_mask(
+                annotations, ann, coco, (h_img, w_img)
+            )
+            kernel_iso = np.ones((5, 5), np.uint8)
+            dilated_src = cv2.dilate(src_mask_full, kernel_iso, iterations=1)
+            if np.any((dilated_src > 0) & (hard_neg_mask > 0)):
+                last_skip = "SKIP: object_not_isolated"
+                continue
+
             # Source surface type (for surface compatibility check)
             src_surface = 0
             if surface_map is not None:
