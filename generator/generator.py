@@ -211,7 +211,28 @@ class CopyMoveGenerator:
                     cv2.drawContours(full_mask_bin[y:y+h, x:x+w], contours, i, 1, -1)
 
         h_img, w_img = img.shape[:2]
-        if x <= 5 or y <= 5 or (x + w) >= (w_img - 5) or (y + h) >= (h_img - 5):
+        # Semantic Integrity Filter 1: Edge truncation.
+        # Objects touching or very close to the image edge are often
+        # truncated. Pasting a truncated object in the middle of the image
+        # leaves an obvious, unnatural straight cut.
+        margin = 15
+        if x <= margin or y <= margin or (x + w) >= (w_img - margin) or (y + h) >= (h_img - margin):
+            return None, None, None
+
+        # Semantic Integrity Filter 2: Bounding box fill ratio.
+        # If the mask occupies very little of its bounding box, the object
+        # is likely heavily occluded, spindly, or disjointed.
+        mask_area = int(cropped_mask_bin.sum())
+        bbox_area = w * h
+        fill_ratio = mask_area / float(max(bbox_area, 1))
+        if fill_ratio < 0.25:
+            return None, None, None
+
+        # Semantic Integrity Filter 3: Source compactness.
+        # Compute isoperimetric ratio of the source mask. Fragments
+        # and heavily occluded objects have very low compactness (jagged).
+        # We require a baseline of 0.15 for the source object.
+        if self._compactness(cropped_mask_bin) < 0.15:
             return None, None, None
 
         return (cropped_img, cropped_mask_bin), (x, y, w, h), full_mask_bin
