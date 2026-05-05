@@ -2,6 +2,12 @@
 
 A scalable, fully local dataset generation pipeline for creating high-quality Copy-Move Forgery Detection (CMFD) benchmark datasets. This utilizes MS COCO 2017 to produce tri-map ground truth forgery imagery designed for training modern dual-branch neural networks like BusterNet.
 
+#Forged images alongside trimap mask
+
+<img width="343" height="635" alt="image" src="https://github.com/user-attachments/assets/25cfe0c3-7a88-42c4-b193-6f902bde449c" />
+
+
+
 ## Project Layout
 
 ```
