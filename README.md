@@ -11,7 +11,7 @@ horizon band, perspective scale, occlusion). Ground truth is emitted at
 four granularities: a 3-class trimap, a binary mask, a 16 px patch-label
 grid, and a hard-negative mask of the scene's other objects.
 
-- **Dataset (Hugging Face):** `TODO — add link after upload`
+- **Dataset (Hugging Face):** https://huggingface.co/datasets/harshitajainn/coco-cmfd
 - **DOI (Zenodo):** `TODO — add badge after first GitHub Release`
 
 ![sample grid](samples/preview.png)
@@ -101,7 +101,7 @@ python generator/quality_filter.py   output/stage1_full   # writes metadata_clea
 ```python
 from datasets import load_dataset
 
-ds = load_dataset("TODO-USER/coco-cmfd", split="train")          # parquet
+ds = load_dataset("harshitajainn/coco-cmfd", split="train")          # parquet
 sample = ds[0]
 sample["image"]        # PIL.Image — forged image
 sample["trimap"]       # PIL.Image — 0 / 128 / 255
