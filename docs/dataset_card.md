@@ -91,7 +91,7 @@ for the most conservative subset.
 from datasets import load_dataset
 import numpy as np
 
-ds = load_dataset("TODO-USER/coco-cmfd", split="train")
+ds = load_dataset("harshitajainn/coco-cmfd", split="train")
 s = ds[0]
 
 image = s["image"]                              # PIL.Image

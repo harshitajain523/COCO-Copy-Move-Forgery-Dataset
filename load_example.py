@@ -3,7 +3,7 @@
 import numpy as np
 from datasets import load_dataset
 
-REPO = "TODO-USER/coco-cmfd"  # set after upload
+REPO = "harshitajainn/coco-cmfd"  
 
 ds = load_dataset(REPO, split="train")            # add streaming=True for no local copy
 strict = ds.filter(lambda r: r["gate_profile"] == "strict")
