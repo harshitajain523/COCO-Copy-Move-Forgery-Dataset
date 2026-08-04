@@ -103,8 +103,9 @@ class CopyMoveGenerator:
         padding_px=12,
         min_resolution=400,
         min_target_compactness=0.04,
-        # Source-selection strictness (relaxed by the recovery preset;
-        # placement/plausibility gates are NOT parameterised on purpose)
+        # Source-selection strictness. The placement and plausibility
+        # gates are deliberately not parameterised: they stay constant
+        # across every profile.
         edge_margin_px=15,
         isolation_dilation_px=2,
         min_fill_ratio=0.25,
@@ -216,11 +217,10 @@ class CopyMoveGenerator:
     def extract_object_patch(self, img, ann, coco):
         """Extract the cropped RGB patch, cropped binary mask, bbox, and full binary mask.
 
-        F5 fix: SAM mask path is resolved against SAM_MASKS_ROOT
-        (an absolute, project-root-relative constant) so the lookup
-        is correct regardless of the calling process's cwd.
+        SAM mask paths resolve against SAM_MASKS_ROOT, an absolute
+        project-root-relative constant, so the lookup is correct
+        regardless of the calling process's working directory.
         """
-        # F5: use absolute path constant instead of bare relative string
         sam_path = os.path.join(
             SAM_MASKS_ROOT,
             f"{ann['image_id']}_{ann['id']}.png",
@@ -311,7 +311,7 @@ class CopyMoveGenerator:
                 full_mask_bin[y:y+h, x:x+w] = cropped_mask_bin
 
         h_img, w_img = img.shape[:2]
-        # Semantic Integrity Filter 1: Edge truncation.
+        # Edge truncation.
         # Objects touching or very close to the image edge are often
         # truncated. Pasting a truncated object in the middle of the image
         # leaves an obvious, unnatural straight cut.
@@ -319,7 +319,7 @@ class CopyMoveGenerator:
         if x <= margin or y <= margin or (x + w) >= (w_img - margin) or (y + h) >= (h_img - margin):
             return None, None, None
 
-        # Semantic Integrity Filter 2: Bounding box fill ratio.
+        # Bounding-box fill ratio.
         # If the mask occupies very little of its bounding box, the object
         # is likely heavily occluded, spindly, or disjointed.
         mask_area = int(cropped_mask_bin.sum())
@@ -336,7 +336,7 @@ class CopyMoveGenerator:
         ):
             return None, None, None
 
-        # Semantic Integrity Filter 3: Source compactness.
+        # Source compactness.
         # Compute isoperimetric ratio of the source mask. Fragments
         # and heavily occluded objects have very low compactness (jagged).
         # We require a baseline of 0.15 for the source object.
@@ -449,12 +449,9 @@ class CopyMoveGenerator:
         Objects lower in frame = closer to camera = larger.
         Objects higher in frame = farther away = smaller.
 
-        BUG FIX (was inverted): the original formula used
-        ``(src_y - dst_y)`` which made objects *larger* when placed
-        higher in the frame.  The correct sign is ``(dst_y - src_y)``:
-        positive when the destination is below the source (closer →
-        bigger), negative when the destination is above (farther →
-        smaller).
+        The sign convention is ``(dst_y - src_y)``: positive when the
+        destination is below the source (nearer, so larger), negative
+        when it is above (farther, so smaller).
 
         Parameters
         ----------
@@ -813,7 +810,7 @@ class CopyMoveGenerator:
             return "SKIP: low_resolution"
         img_area = h_img * w_img
 
-        # Filter 1: Strictly reject grayscale images for Stage 1 color learning
+        # Reject grayscale images: Stage 1 targets colour statistics.
         if len(img.shape) == 2 or (
             np.array_equal(img[:, :, 0], img[:, :, 1]) and 
             np.array_equal(img[:, :, 1], img[:, :, 2])
@@ -883,7 +880,7 @@ class CopyMoveGenerator:
                 last_skip = "SKIP: tamper_too_small"
                 continue
 
-            # Semantic Integrity Filter 4: Spatial Isolation
+            # Spatial isolation.
             # Objects that touch other annotations are usually occluded
             # (e.g., person riding a horse, baby on dad's shoulders,
             # or a person holding a tennis racket). We dilate the source
@@ -997,7 +994,7 @@ class CopyMoveGenerator:
                     x0=src_x, y0=src_y,
                 )
 
-            # F4: relaxation ladder for vertical placement.
+            # Relaxation ladder for vertical placement.
             # Tier 1 (strict): +-15% of src_center_y
             # Tier 2 (relaxed): +-30% of src_center_y
             # Tier 3 (permissive): no vertical constraint — only for
@@ -1023,8 +1020,8 @@ class CopyMoveGenerator:
                 if src_cat in NO_ROTATE_CATS:
                     rotation_angle = 0.0
 
-                # F1 + Depth Realism: compute perspective scale then hard-gate
-                # on minimum pixel area to reject invisible/floating objects.
+                # Compute the perspective scale, then gate on minimum
+                # pixel area to reject invisible or floating objects.
                 if use_perspective_scale:
                     if candidate_centers:
                         approx_dst_cy = random.choice(candidate_centers)[1]
@@ -1036,10 +1033,10 @@ class CopyMoveGenerator:
                         src_center_y, approx_dst_cy, h_img
                     )
 
-                    # F1 HARD GATE: estimate post-scale area.  If the
-                    # perspective reduction makes the object smaller than
-                    # min_area pixels, skip this transform — it would
-                    # produce an invisible or anomalously tiny object.
+                    # Estimate post-scale area. If perspective reduction
+                    # takes the object below min_area pixels, skip this
+                    # transform: the result would be an invisible or
+                    # anomalously tiny object.
                     estimated_area = (
                         float(ann.get("area", 1)) * scale_factor ** 2
                     )
@@ -1052,11 +1049,11 @@ class CopyMoveGenerator:
                         )
                         continue
 
-                    # FLOATING FIX (abs Y-floor): for ground-type objects,
-                    # the approximate destination must be at or below the
-                    # 40% mark (the horizon floor).  This catches the case
-                    # where perspective_scale correctly shrinks the object
-                    # but the chosen approx_dst_cy is still in sky territory.
+                    # Absolute Y-floor: a ground-type object's approximate
+                    # destination must lie at or below the horizon floor.
+                    # Catches the case where perspective_scale correctly
+                    # shrinks the object but the candidate height is still
+                    # in sky territory.
                     if src_cat in GROUND_CATS and approx_dst_cy < _ABS_Y_FLOOR:
                         last_skip = "SKIP: ground_object_above_horizon"
                         logger.debug(
@@ -1115,7 +1112,7 @@ class CopyMoveGenerator:
                 if target_area > int(self.max_target_area_ratio * img_area):
                     last_skip = "SKIP: target_too_large"
                     continue
-                # Filter 3: Minimum size threshold check
+                # Minimum size threshold.
                 if target_area < int(self.min_area_ratio * img_area):
                     last_skip = "SKIP: tamper_too_small"
                     continue
@@ -1139,9 +1136,9 @@ class CopyMoveGenerator:
                 placed = False
 
                 # STRICT PLACEMENT: Boolean Cross-Correlation
-                # F4: Run the cross-correlation with the tightest horizon
-                # first. If no valid spots are found, relax progressively
-                # through the _HORIZ_TIERS ladder defined above.
+                # Cross-correlate with the tightest horizon band first,
+                # relaxing progressively through _HORIZ_TIERS only if no
+                # valid spot is found.
                 M_base = np.ones((h_img, w_img), dtype=np.float32)
                 # Exclude ALL other COCO annotations
                 M_base[exclusion_mask > 0] = 0.0
@@ -1156,7 +1153,7 @@ class CopyMoveGenerator:
                     if src_stuff_mask > 0:
                         M_base[surface_map != src_stuff_mask] = 0.0
 
-                # F4: Try each relaxation tier in order
+                # Try each relaxation tier in order
                 dest_candidates = []
                 accepted_horiz_tier = "none"
                 kernel = obj_mask_bin.astype(np.float32)
@@ -1209,7 +1206,7 @@ class CopyMoveGenerator:
                     dst_x = dst_cx - pat_w // 2
                     dst_y = dst_cy - pat_h // 2
 
-                    # F2: Canvas-clipping prevention.
+                    # Canvas-clipping prevention.
                     # A destination box within 10px of any image edge produces
                     # an artificial straight line that the CNN uses as a cheat.
                     _EDGE_PAD = 10
@@ -1221,11 +1218,10 @@ class CopyMoveGenerator:
                     ):
                         continue
 
-                    # FLOATING FIX — final gate (exact dst_cy).
-                    # Even if the cross-correlation found a spot that
-                    # passes the horizon band, the actual dst_cy after
-                    # clamping may still be above the horizon floor for
-                    # ground-type objects.  Reject unconditionally.
+                    # Final Y-floor gate on the exact destination.
+                    # A spot that passed the horizon band can still end up
+                    # above the floor once clamped, so ground-type objects
+                    # are re-checked against the exact dst_cy.
                     if src_cat in GROUND_CATS and dst_cy < _ABS_Y_FLOOR:
                         continue
 
@@ -1333,7 +1329,7 @@ class CopyMoveGenerator:
                     if occ_frac > 0.0:
                         continue
 
-                    # Filter 2: Reject if target overlaps the original SOURCE object > 20%
+                    # Reject a target overlapping the source region by >20%.
                     src_occ_frac = self.compute_occupied_fraction(
                         src_mask_full, obj_mask_bin, dst_y, dst_x
                     )
@@ -1581,8 +1577,8 @@ class CopyMoveGenerator:
                         'source_category_name': cat_name,
                         'source_supercategory': supercat,
                         'placement_tier': placement_tier,
-                        # F4: horizon tier used (strict/relaxed/permissive)
-                        # for downstream quality filtering of the CSV.
+                        # Horizon tier used (strict/relaxed/permissive),
+                        # for downstream quality filtering.
                         'horizon_tier': accepted_horiz_tier,
                         'same_cat_instance_count': same_cat_count,
                         'source_texture_var': round(src_tex, 2),

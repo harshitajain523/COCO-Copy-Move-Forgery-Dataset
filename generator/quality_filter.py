@@ -100,8 +100,8 @@ def check_row(row, stage_dir, stuff_coco, surface_cache):
     # 3. Support-surface violation
     support_confirmed = False
     if stuff_coco is not None and src.any() and tgt.any():
-        # Prefer the explicit metadata column (added 2026-07-07);
-        # fall back to filename parsing for older datasets.
+        # Prefer the explicit metadata column, falling back to
+        # filename parsing for datasets generated without it.
         img_id = row.get("image_id")
         if img_id is None or pd.isna(img_id):
             img_id = _img_id_from_filename(row["image_filename"])

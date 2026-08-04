@@ -218,10 +218,9 @@ def _create_stuff_subset(stuff_path, stuff_subset_path,
     return True
 
 
-# NOTE: the old _maybe_downscale() helper was removed on purpose
-# (2026-07-07): it resized the image without rescaling the COCO
-# annotations, which would silently misalign every mask. Images are
-# always processed at native resolution now.
+# Images are processed at native resolution. Downscaling here would
+# require rescaling the COCO annotations in lockstep; doing one without
+# the other silently misaligns every mask.
 
 
 # ── Stage-aware generation ───────────────────────────────────────

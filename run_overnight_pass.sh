@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Overnight volume pass (user-approved levers, 2026-07-18):
-#   Phase A: same-object re-paste on proven images (fast, high yield)
-#   Phase B: recovery walk over all recoverable failures with the
+# Two-phase volume pass:
+#   Phase A: same-object re-paste on images with a proven placement
+#   Phase B: recovery walk over recoverable failures using the
 #            relaxed_v2 profile (min paste size 1.2%, rec1 stream)
 # Both phases: stage1_recovery_v2 preset, rows tagged relaxed_v2,
 # placement gates identical to strict. Fully resumable.

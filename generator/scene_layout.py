@@ -337,11 +337,11 @@ def heuristic_surface_code(y, h_img, is_outdoor_hint=True):
         Estimated surface code.
     """
     frac = y / max(h_img, 1)
-    # Sky boundary widened from 25% to 35% to shrink the unlabelled
-    # "other" dead zone where ground objects could slip through.
+    # A 35% sky boundary keeps the unlabelled "other" dead zone
+    # narrow; a higher boundary lets ground objects slip through.
     if is_outdoor_hint and frac < 0.35:
         return 2  # sky
-    # Ground threshold widened from 40% to 45% for the same reason.
+    # The ground threshold is set at 45% for the same reason.
     if frac > 0.45:
         return 1  # ground
     return 0  # other

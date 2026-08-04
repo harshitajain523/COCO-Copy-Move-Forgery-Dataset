@@ -32,12 +32,11 @@ class StageConfig:
     min_area_ratio: float = 0.02
     max_target_area_ratio: float = 0.20
     min_laplacian_var: float = 25.0
-    # 400→320 (2026-07-07 scale decision): min-side floor. 400 was
-    # the third-largest yield killer; 320 keeps VGA-class images.
+    # Minimum image side. 320 admits VGA-class COCO images, which a
+    # higher floor would discard in quantity.
     min_resolution: int = 320
-    # Compactness floor raised from 0.04 to 0.07:
-    # a value of 0.04 allowed GrabCut-trimmed torso fragments
-    # (very jagged, low isoperimetric ratio) to pass through.
+    # Compactness floor. Below ~0.07, GrabCut-trimmed fragments
+    # (very jagged, low isoperimetric ratio) pass through.
     min_target_compactness: float = 0.07
     # Source-selection strictness. Defaults = the strict profile the
     # main Stage 1 run used; the recovery preset relaxes them and
@@ -162,9 +161,9 @@ STAGE1_CLEAN = StageConfig(
     # Pipeline
     num_images=1000,
     subset_size=40000,
-    # 2→4 (2026-07-07 scale decision): each variant uses a different
-    # source object; images that pass the gates once often support
-    # several distinct forgeries.
+    # Each variant copies a different source object. An image that
+    # passes the gates once will often support several distinct
+    # forgeries.
     variants_per_image=4,
     category_share_cap=0.05,
 )
@@ -235,10 +234,10 @@ STAGE1_RECOVERY = _dc.replace(
     gate_profile="relaxed_v1",
 )
 
-# relaxed_v2 (user-approved 2026-07-18): additionally lowers the
-# minimum paste size from 2% to 1.2% of image area (absolute 1000px
-# floor unchanged). Small copy-moves are the realistic hard case in
-# the CMFD literature; most COCO objects fall below the 2% floor.
+# relaxed_v2 additionally lowers the minimum paste size from 2% to
+# 1.2% of image area (the absolute 1000 px floor is unchanged). Small
+# copy-moves are the realistic hard case in the CMFD literature, and
+# most COCO objects fall below a 2% floor.
 STAGE1_RECOVERY_V2 = _dc.replace(
     STAGE1_RECOVERY,
     name="stage1_recovery_v2",
