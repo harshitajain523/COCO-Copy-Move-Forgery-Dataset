@@ -194,6 +194,91 @@ def get_dominant_surface(surface_map, x, y, w, h):
     return int(codes[np.argmax(counts)])
 
 
+def support_surface_code(surface_map, mask_bin, x0=0, y0=0,
+                         probe_px=12):
+    """
+    Determine the surface an object is resting ON.
+
+    For each column of the mask, find the lowest foreground pixel
+    and sample the surface map in a thin band directly below it.
+    The dominant non-zero code across all columns is the support
+    surface. This is far more discriminative than the dominant
+    surface of the bounding box: an object standing on a floor in
+    front of a wall has bbox-dominant 'wall' but support 'ground'.
+
+    Parameters
+    ----------
+    surface_map : np.ndarray
+        (H, W) surface classification map.
+    mask_bin : np.ndarray
+        Binary object mask (any resolution patch).
+    x0, y0 : int
+        Top-left offset of the mask patch in image coordinates.
+    probe_px : int
+        Depth of the probe band below the object's bottom edge.
+
+    Returns
+    -------
+    int
+        Dominant surface code under the footprint, 0 if unknown.
+    """
+    map_h, map_w = surface_map.shape[:2]
+    fg = mask_bin > 0
+    if not fg.any():
+        return 0
+
+    codes = []
+    cols = np.where(fg.any(axis=0))[0]
+    # Sample up to ~32 columns evenly for speed
+    if len(cols) > 32:
+        cols = cols[np.linspace(0, len(cols) - 1, 32).astype(int)]
+    for c in cols:
+        rows = np.where(fg[:, c])[0]
+        bottom = y0 + rows[-1]
+        xx = x0 + c
+        if not (0 <= xx < map_w):
+            continue
+        band = surface_map[
+            min(bottom + 1, map_h - 1):
+            min(bottom + 1 + probe_px, map_h),
+            xx,
+        ]
+        band = band[band > 0]
+        if band.size:
+            codes.extend(band.tolist())
+
+    if not codes:
+        return 0
+    vals, counts = np.unique(np.asarray(codes), return_counts=True)
+    return int(vals[np.argmax(counts)])
+
+
+def is_support_compatible(src_support, dst_support):
+    """
+    Check whether a destination support surface can plausibly hold
+    an object whose source support was *src_support*.
+
+    Unlike :func:`is_surface_compatible`, this is strict about
+    gravity: a ground-supported object may only land on ground, a
+    water-supported object only on water. Wall support (mounted
+    objects like clocks and signs) transfers to walls only.
+    Unknown (0) on either side defers to the caller's fallbacks.
+
+    Returns
+    -------
+    bool
+    """
+    if src_support == 0 or dst_support == 0:
+        return True  # unknown — caller applies Y-floor fallbacks
+    if src_support == dst_support:
+        return True
+    # ground ↔ water is the only cross-pair we allow (shorelines,
+    # boats, wading animals are common in COCO).
+    if {src_support, dst_support} == {1, 3}:
+        return True
+    return False
+
+
 def is_surface_compatible(src_surface_code, dst_surface_code):
     """
     Check if source and destination surfaces are compatible.

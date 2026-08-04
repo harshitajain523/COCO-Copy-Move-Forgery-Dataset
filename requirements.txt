@@ -1,0 +1,13 @@
+# Generation pipeline + quality tooling.
+# Pinned to the versions used to produce the released dataset.
+numpy==2.4.4
+opencv-python==4.13.0.92
+pandas==3.0.2
+matplotlib==3.10.8
+pycocotools==2.0.11
+
+# Optional — only for precompute_sam_masks.py (SAM-refined masks):
+#   torch==2.5.1
+#   timm==1.0.26
+#   tqdm==4.67.3
+#   mobile_sam @ git+https://github.com/ChaoningZhang/MobileSAM.git

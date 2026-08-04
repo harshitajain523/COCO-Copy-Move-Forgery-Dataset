@@ -1,0 +1,30 @@
+{
+  "title": "COCO-CMFD: A Synthetic Copy-Move Forgery Dataset with Source/Target Ground Truth",
+  "description": "<p>COCO-CMFD is a synthetic copy-move forgery dataset generated from MS-COCO 2017 for training and evaluating copy-move forgery detection (CMFD) models. Each sample takes one annotated COCO object, applies a mild affine transform, and pastes it elsewhere in the same image at a location that passes scene-plausibility checks (support surface, horizon band, perspective scale, occlusion).</p><p>Ground truth is provided at four granularities: a 3-class trimap (background / source / target), a binary mask, a 16-pixel patch-label grid using a strict purity rule, and a hard-negative mask covering the scene's other annotated objects.</p><p>The release contains 12,271 samples drawn from 7,150 distinct COCO train2017 images across 64 categories, at native COCO resolution with no post-processing applied. Blending uses an inward-only feather so every modified pixel lies inside the labelled ground truth: measured mask-alignment IoU is 1.0000 (minimum 0.9997 over 60 sampled images), with zero pixels changed outside any mask.</p><p>This repository holds the generation pipeline and quality tooling. Generation is deterministic and resumable; the released dataset used seed 1337. The dataset itself is distributed via Hugging Face in parquet and WebDataset formats.</p><p>Images derive from MS-COCO 2017. COCO annotations are CC BY 4.0; COCO images originate from Flickr and remain subject to their owners' terms. The CC BY 4.0 grant here covers the forgery generation, ground-truth masks and metadata, not the underlying photographic content.</p>",
+  "creators": [
+    {
+      "name": "Jain, Harshita"
+    }
+  ],
+  "upload_type": "dataset",
+  "access_right": "open",
+  "license": "cc-by-4.0",
+  "keywords": [
+    "copy-move forgery detection",
+    "image forensics",
+    "tamper detection",
+    "synthetic dataset",
+    "MS-COCO",
+    "image manipulation detection",
+    "computer vision",
+    "semantic segmentation"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://cocodataset.org",
+      "relation": "isDerivedFrom",
+      "resource_type": "dataset",
+      "scheme": "url"
+    }
+  ]
+}
