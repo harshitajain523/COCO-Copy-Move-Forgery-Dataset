@@ -18,22 +18,20 @@ overlay (blue = source, red = pasted copy).*
 
 ## Why this dataset exists
 
-The classic benchmarks — CoMoFoD (260 image sets), CASIAv2, COVERAGE (100 images) —
-are far too small to train a deep model on, and are meant for
-*evaluation*. The synthetic corpus most published CMFD models pretrain
+The classic benchmarks: CoMoFoD (260 image sets), CASIAv2, COVERAGE (100 images) are usually used for
+*evaluation* in DL based CMFD methods. The synthetic corpus most published CMFD models pretrain
 on, USC-ISI CMFD (introduced with BusterNet), is no longer reliably
-obtainable, which leaves a reproducibility gap: papers report numbers
-against a training set new work cannot get.
+obtainable, which leaves a reproducibility gap.
 
 The usual response is to synthesise forgeries from COCO, and that involves taking an annotated object, pasting it elsewhere, keeping the mask.
 The problem that arises is that naive synthesis produces forgeries that are extremely unrealistic. A car floating in the sky, a
 mirrored STOP sign reading "POTS", a zebra pasted at three times the
 size of the zebra beside it. A detector trained on those learns to find
-*impossible scenes*, not duplicated pixels — and that shortcut
+*impossible scenes*, not duplicated pixels and that shortcut
 evaporates on real forgeries, where a human forger placed the copy
 somewhere believable.
 
-This dataset is an attempt to remove that shortcut. Placement is
+This dataset attempts to remove that shortcut. Placement is
 constrained by what the scene can physically support, so the copy is
 plausible and the most reliable remaining signal is the duplication
 itself.
@@ -42,7 +40,7 @@ itself.
 ## How a sample is generated
 
 Each forgery goes through four stages. An image that fails any check is
-skipped and the reason logged — there is no partial output.
+skipped and the reason logged so that there is no partial output.
 
 ### 1. Choosing what to copy
 
