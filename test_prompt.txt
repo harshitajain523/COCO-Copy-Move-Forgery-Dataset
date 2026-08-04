@@ -1,1 +1,0 @@
-User meant to keep the advanced SAM and Boolean Cross-Correlation code.
