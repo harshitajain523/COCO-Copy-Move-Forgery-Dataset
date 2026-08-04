@@ -18,18 +18,15 @@ overlay (blue = source, red = pasted copy).*
 
 ## Why this dataset exists
 
-Copy-move forgery detection is a data-starved problem. The classic
-benchmarks — CoMoFoD (260 image sets), CASIA, COVERAGE (100 images) —
+The classic benchmarks — CoMoFoD (260 image sets), CASIAv2, COVERAGE (100 images) —
 are far too small to train a deep model on, and are meant for
 *evaluation*. The synthetic corpus most published CMFD models pretrain
 on, USC-ISI CMFD (introduced with BusterNet), is no longer reliably
 obtainable, which leaves a reproducibility gap: papers report numbers
 against a training set new work cannot get.
 
-The usual response is to synthesise forgeries from COCO, and that part
-is easy — take an annotated object, paste it elsewhere, keep the mask.
-The problem is that naive synthesis produces forgeries no human would
-ever make. A car floating in the sky, a toilet halfway up a wall, a
+The usual response is to synthesise forgeries from COCO, and that involves taking an annotated object, pasting it elsewhere, keeping the mask.
+The problem that arises is that naive synthesis produces forgeries that are extremely unrealistic. A car floating in the sky, a
 mirrored STOP sign reading "POTS", a zebra pasted at three times the
 size of the zebra beside it. A detector trained on those learns to find
 *impossible scenes*, not duplicated pixels — and that shortcut
@@ -41,8 +38,6 @@ constrained by what the scene can physically support, so the copy is
 plausible and the most reliable remaining signal is the duplication
 itself.
 
-Its intended role is large-scale pretraining, followed by fine-tuning
-on a real benchmark (DEFACTO, CASIA) and evaluation on CoMoFoD.
 
 ## How a sample is generated
 
@@ -87,7 +82,7 @@ exactly.
 
 ### 3. Finding somewhere plausible to put it
 
-This is where most of the work happens, and where most candidates die.
+This is where most of the work is done, and where most candidates die.
 
 Valid destinations are found by cross-correlating the transformed
 object mask against a map of allowed pixels — regions not occupied by
@@ -98,13 +93,13 @@ strong foreground object. Candidates then face:
   looks at what lies *directly beneath the object's footprint* — not
   the dominant label of its bounding box. That distinction matters: a
   toilet standing on a floor in front of a tiled wall has a
-  wall-dominated bounding box, so a bbox-based check happily places it
+  wall-dominated bounding box, so a bbox-based check places it
   at head height. The footprint check requires ground to land on
   ground, water on water.
 - **Horizon band.** The destination must sit within a vertical band
   around the source's height, tightened first and relaxed only if
   nothing is found. Ground-dwelling categories are never released from
-  the constraint; only genuinely airborne ones (birds, kites, planes)
+  the constraint; only genuine airborne ones (birds, kites, planes)
   may be placed freely.
 - **Perspective consistency.** Objects lower in frame are nearer and
   should be larger. The applied scale must agree with the depth implied
@@ -120,7 +115,7 @@ strong foreground object. Candidates then face:
 
 The object is composited with an **inward-only 2 px feather**: the
 alpha ramp lives strictly *inside* the labelled mask. A razor-sharp
-cutout is a giveaway no real forger leaves, but a feather that bleeds
+cutout is a giveaway , but a feather that bleeds
 *outward* would modify pixels the mask calls background — quietly
 teaching the model that the boundary is uncertain. Confining the ramp
 inward keeps every modified pixel inside the ground truth. Measured
@@ -235,8 +230,6 @@ share a source photograph, so a naive random split leaks.
 
 ## Limitations
 
-Stated plainly, because they affect what conclusions you can draw:
-
 - **Synthetic.** These are algorithmic composites, not forgeries made
   by a person trying to deceive someone. Treat this as pretraining data
   and validate on real benchmarks.
@@ -255,7 +248,7 @@ Stated plainly, because they affect what conclusions you can draw:
 - **Plausibility is heuristic.** COCO-Stuff labels are coarse and the
   support-surface test is a footprint probe, not depth estimation.
   Roughly 0.7% of samples still fail the post-hoc audit; they are
-  flagged in `metadata_clean.csv` rather than silently dropped.
+  flagged in `metadata_clean.csv`.
 
 ## Regenerating
 
@@ -274,8 +267,7 @@ variant), so the same seed reproduces the same forgery for a given
 image regardless of shard order or where a run resumed. It is also
 **resumable**: each sample is appended to `completed.jsonl` as it is
 written, completed and failed images are skipped on restart, and
-`metadata.csv` is rebuilt from that ledger. A hard kill mid-run costs
-nothing. The released set used seed `1337`.
+`metadata.csv` is rebuilt from that ledger. The released set used seed `1337`.
 
 Single pass:
 
@@ -305,7 +297,7 @@ samples/            six image/mask pairs + preview grid
 ```
 
 ## Citation
-
+If you use this dataset, cite it as follows
 ```bibtex
 @dataset{jain_coco_cmfd_2026,
   author    = {Jain, Harshita},
@@ -331,7 +323,7 @@ metadata, not the underlying photographic content. Review the
 [COCO terms of use](https://cocodataset.org/#termsofuse) before
 redistributing the imagery, particularly for commercial use.
 
-If you use this dataset, please also cite MS-COCO:
+On dataset usage, also cite MS-COCO:
 
 ```bibtex
 @inproceedings{lin2014microsoft,
