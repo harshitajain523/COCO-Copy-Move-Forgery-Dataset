@@ -186,8 +186,13 @@ def main():
             "Run the generator first to create a subset."
         )
 
-    img_dir = "/home/harshita/coco/train2017"
-    checkpoint = os.path.join(project_root, "mobile_sam.pt")
+    img_dir = os.path.join(
+        os.environ.get("COCO_ROOT", os.path.expanduser("~/coco")),
+        "train2017",
+    )
+    checkpoint = os.environ.get(
+        "MOBILE_SAM_CKPT", os.path.join(project_root, "mobile_sam.pt")
+    )
 
     run_precompute(
         ann_file=ann_file,

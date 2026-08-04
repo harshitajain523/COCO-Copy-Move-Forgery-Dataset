@@ -9,8 +9,9 @@ from scene_layout import (
     build_surface_map,
     get_dominant_surface,
     heuristic_surface_code,
+    is_support_compatible,
     is_surface_compatible,
-    surface_code_to_name,
+    support_surface_code,
 )
 from patch_utils import pad_to_patch_grid, trimap_to_patch_labels
 
@@ -22,6 +23,66 @@ logger = logging.getLogger(__name__)
 _GEN_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_GEN_DIR)
 SAM_MASKS_ROOT = os.path.join(_PROJECT_ROOT, "output", "sam_masks")
+
+# ── Category constants ───────────────────────────────────────────
+# Ground-type COCO category IDs: people, vehicles, animals, kitchen
+# items, food, furniture — anything that should never appear floating
+# in the sky. Flying categories (bird=16, airplane=5, kite=38) are
+# explicitly excluded.
+GROUND_CATS = frozenset({
+    1,   # person
+    2, 3, 4, 6, 7, 8,    # bicycle, car, motorcycle, bus, train, truck
+    9, 10, 11,            # boat, traffic light, fire hydrant
+    13, 14, 15,           # stop sign, parking meter, bench
+    17, 18, 19, 20, 21, 22, 23, 24, 25,  # animals (cat→bear)
+    27, 28,              # backpack, umbrella
+    31, 32, 33,          # handbag, tie, suitcase
+    39, 40, 41, 42, 43,  # bottle, wine glass, cup, fork, knife
+    44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55,  # spoon→sandwich
+    56, 57, 58, 59, 60,  # broccoli→hot dog
+    61, 62, 63, 64, 65,  # pizza→cake
+    67, 70,              # chair, toilet
+    72, 73, 74, 75, 76, 77, 78, 79, 80,  # tv→scissors
+    81, 82, 84, 85, 86, 87, 88, 89, 90,  # hair drier→toothbrush
+})
+
+VEHICLE_CATS = frozenset({2, 3, 4, 6, 7, 8})       # bicycle→truck
+LARGE_ANIMAL_CATS = frozenset({22, 23, 24, 25})    # elephant→giraffe
+
+# Categories that carry text, digits, or strongly chiral structure.
+# Horizontal flips produce mirrored writing (e.g. "POTS" stop signs,
+# backwards clock faces) — an instant giveaway to a human observer.
+NO_FLIP_CATS = frozenset({
+    3, 5, 6, 7, 8,       # car, airplane, bus, train, truck (livery)
+    10, 13, 14,          # traffic light, stop sign, parking meter
+    72, 73, 76, 77,      # tv, laptop, keyboard, cell phone
+    84, 85,              # book, clock
+})
+
+# Rectangular categories that legitimately fill their bounding box.
+# For every other (organic) category, a mask that nearly fills the
+# bbox means the segmentation failed and grabbed background.
+BOXY_CATS = frozenset({
+    13, 33,              # stop sign, suitcase
+    72, 73, 76, 77,      # tv, laptop, keyboard, cell phone
+    78, 79, 80, 82,      # microwave, oven, toaster, refrigerator
+    84, 85,              # book, clock
+})
+
+# Rigid man-made categories that are always plumb in real photos:
+# signs, mounted fixtures, furniture, appliances, vehicles. Even a
+# small rotation (a tilted clock on a wall, a leaning bench) is a
+# human-visible giveaway. Organic categories (people, animals, food)
+# keep the mild rotation range.
+NO_ROTATE_CATS = frozenset({
+    2, 3, 4, 6, 7, 8, 9,    # bicycle→truck, boat
+    10, 11, 13, 14, 15,     # traffic light, hydrant, stop sign,
+                            # parking meter, bench
+    62, 63, 65, 67, 70,     # chair, couch, bed, dining table, toilet
+    72, 73, 76, 77,         # tv, laptop, keyboard, cell phone
+    78, 79, 80, 81, 82,     # microwave, oven, toaster, sink, fridge
+    84, 85,                 # book, clock
+})
 
 class CopyMoveGenerator:
     def __init__(
@@ -38,9 +99,16 @@ class CopyMoveGenerator:
         semantic_radius_px=160,
         semantic_bg_color_thresh=55.0,
         hsv_hist_intersect_thresh=0.35,
+        luminance_delta_thresh=45.0,
         padding_px=12,
         min_resolution=400,
         min_target_compactness=0.04,
+        # Source-selection strictness (relaxed by the recovery preset;
+        # placement/plausibility gates are NOT parameterised on purpose)
+        edge_margin_px=15,
+        isolation_dilation_px=2,
+        min_fill_ratio=0.25,
+        gate_profile="strict",
         transform_policy="coverage_like",
         flip_prob=0.5,
         k_ann=3,
@@ -83,9 +151,14 @@ class CopyMoveGenerator:
         self.semantic_radius_px = int(semantic_radius_px)
         self.semantic_bg_color_thresh = float(semantic_bg_color_thresh)
         self.hsv_hist_intersect_thresh = float(hsv_hist_intersect_thresh)
+        self.luminance_delta_thresh = float(luminance_delta_thresh)
         self.padding_px = int(padding_px)
         self.min_resolution = int(min_resolution)
         self.min_target_compactness = float(min_target_compactness)
+        self.edge_margin_px = int(edge_margin_px)
+        self.isolation_dilation_px = int(isolation_dilation_px)
+        self.min_fill_ratio = float(min_fill_ratio)
+        self.gate_profile = str(gate_profile)
         self.transform_policy = str(transform_policy)
         self.flip_prob = float(flip_prob)
         self.k_ann = int(k_ann)
@@ -152,14 +225,27 @@ class CopyMoveGenerator:
             SAM_MASKS_ROOT,
             f"{ann['image_id']}_{ann['id']}.png",
         )
+        # annToMask returns a Fortran-ordered array; OpenCV requires
+        # C-contiguous buffers (drawContours/grabCut raise otherwise).
+        poly_mask = np.ascontiguousarray(coco.annToMask(ann))
+        full_mask = poly_mask
         is_sam = False
         if os.path.exists(sam_path):
-            full_mask_raw = cv2.imread(sam_path, cv2.IMREAD_GRAYSCALE)
-            if full_mask_raw is not None:
-                full_mask = full_mask_raw
-                is_sam = True
-        else:
-            full_mask = coco.annToMask(ann)
+            sam_raw = cv2.imread(sam_path, cv2.IMREAD_GRAYSCALE)
+            if (
+                sam_raw is not None
+                and sam_raw.shape[:2] == poly_mask.shape[:2]
+            ):
+                sam_bin = (sam_raw > 0).astype(np.uint8)
+                # SAM sanity gate: bbox-prompted SAM sometimes grabs
+                # background (walls, ledges) instead of the object.
+                # Only trust it when it broadly agrees with the COCO
+                # polygon; otherwise fall back to polygon + GrabCut.
+                inter = int(np.logical_and(sam_bin, poly_mask).sum())
+                union = int(np.logical_or(sam_bin, poly_mask).sum())
+                if union > 0 and inter / union >= 0.60:
+                    full_mask = sam_bin
+                    is_sam = True
 
         x, y, w, h = map(int, ann['bbox'])
         
@@ -167,10 +253,13 @@ class CopyMoveGenerator:
         if w <= 0 or h <= 0 or x < 0 or y < 0:
             return None, None, None
             
-        # Crop mask and image
+        # Crop mask and image (bbox slices are views — force
+        # C-contiguous copies so every OpenCV call downstream works)
         try:
-            cropped_mask = full_mask[y:y+h, x:x+w].astype(np.uint8)
-            cropped_img = img[y:y+h, x:x+w]
+            cropped_mask = np.ascontiguousarray(
+                full_mask[y:y+h, x:x+w]
+            ).astype(np.uint8)
+            cropped_img = np.ascontiguousarray(img[y:y+h, x:x+w])
         except Exception:
             return None, None, None
             
@@ -194,9 +283,14 @@ class CopyMoveGenerator:
             try:
                 cv2.grabCut(cropped_img, gc_mask, None, bgdModel, fgdModel, 3, cv2.GC_INIT_WITH_MASK)
                 refined_mask = np.where((gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD), 1, 0).astype(np.uint8)
-                
-                # Only use refined mask if it didn't completely destroy the object
-                if (refined_mask > 0).sum() > (cropped_mask_bin > 0).sum() * 0.2:
+
+                # Accept the refinement only if it stays close to the
+                # polygon (IoU >= 0.75). A pure area check let GrabCut
+                # both eat objects down to fragments and inflate them
+                # into amorphous background blobs.
+                inter = int(np.logical_and(refined_mask, cropped_mask_bin).sum())
+                union = int(np.logical_or(refined_mask, cropped_mask_bin).sum())
+                if union > 0 and inter / union >= 0.75:
                     cropped_mask_bin = refined_mask
                     # Also update full_mask_bin to reflect this eroded boundary
                     full_mask_bin[y:y+h, x:x+w] = refined_mask
@@ -205,17 +299,23 @@ class CopyMoveGenerator:
 
         contours, hierarchy = cv2.findContours(cropped_mask_bin, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
         if hierarchy is not None:
+            filled_holes = False
             for i in range(len(contours)):
                 if hierarchy[0][i][3] != -1:
+                    # Fill interior holes on the contiguous crop, then
+                    # sync the full mask (drawing directly into the
+                    # full_mask_bin slice view fails: non-contiguous).
                     cv2.drawContours(cropped_mask_bin, contours, i, 1, -1)
-                    cv2.drawContours(full_mask_bin[y:y+h, x:x+w], contours, i, 1, -1)
+                    filled_holes = True
+            if filled_holes:
+                full_mask_bin[y:y+h, x:x+w] = cropped_mask_bin
 
         h_img, w_img = img.shape[:2]
         # Semantic Integrity Filter 1: Edge truncation.
         # Objects touching or very close to the image edge are often
         # truncated. Pasting a truncated object in the middle of the image
         # leaves an obvious, unnatural straight cut.
-        margin = 15
+        margin = self.edge_margin_px
         if x <= margin or y <= margin or (x + w) >= (w_img - margin) or (y + h) >= (h_img - margin):
             return None, None, None
 
@@ -225,7 +325,15 @@ class CopyMoveGenerator:
         mask_area = int(cropped_mask_bin.sum())
         bbox_area = w * h
         fill_ratio = mask_area / float(max(bbox_area, 1))
-        if fill_ratio < 0.25:
+        if fill_ratio < self.min_fill_ratio:
+            return None, None, None
+        # Inverse check: an organic object whose mask fills ~the whole
+        # bbox means the mask leaked into the background (e.g. a SAM
+        # bbox prompt returning the wall behind a dog).
+        if (
+            fill_ratio > 0.92
+            and int(ann.get("category_id", -1)) not in BOXY_CATS
+        ):
             return None, None, None
 
         # Semantic Integrity Filter 3: Source compactness.
@@ -588,10 +696,63 @@ class CopyMoveGenerator:
         return overlap / total_paste
 
     def _apply_patch_hsv_shift(self, obj_bgr):
-        return obj_bgr # strict purity
+        """Random V/S scaling of the copy patch (prob-gated).
+
+        Stage 1 sets patch_hsv_shift_prob=0.0 → exact no-op.
+        Returns (patch, applied_flag).
+        """
+        if random.random() >= self.patch_hsv_shift_prob:
+            return obj_bgr, 0
+        hsv = cv2.cvtColor(obj_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
+        s = random.uniform(self.patch_s_min, self.patch_s_max)
+        v = random.uniform(self.patch_v_min, self.patch_v_max)
+        hsv[..., 1] = np.clip(hsv[..., 1] * s, 0, 255)
+        hsv[..., 2] = np.clip(hsv[..., 2] * v, 0, 255)
+        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR), 1
 
     def _post_process_composite(self, img_bgr):
-        return img_bgr # strict purity
+        """Stage 2 degradations applied to the FINAL composite.
+
+        Photometric only — nothing here may move pixels, so the
+        ground-truth masks stay pixel-exact. Stage 1 sets every
+        probability to 0.0 → exact no-op. Returns (image, params).
+        """
+        pp = {"jpeg_quality": None, "noise_sigma": None,
+              "blur": 0, "contrast": None, "brightness": None}
+        if random.random() < self.bc_prob:
+            c = random.uniform(self.contrast_min, self.contrast_max)
+            b = random.randint(
+                -self.brightness_max_abs, self.brightness_max_abs
+            )
+            img_bgr = cv2.convertScaleAbs(img_bgr, alpha=c, beta=b)
+            pp["contrast"], pp["brightness"] = round(c, 3), b
+        if random.random() < self.blur_prob:
+            img_bgr = cv2.GaussianBlur(img_bgr, (3, 3), 0)
+            pp["blur"] = 1
+        if random.random() < self.noise_prob:
+            sigma = random.uniform(
+                self.noise_sigma_min, self.noise_sigma_max
+            )
+            # Seed numpy from the (already seeded) python RNG so the
+            # noise field is reproducible per image.
+            nrng = np.random.default_rng(random.getrandbits(63))
+            noise = nrng.normal(0.0, sigma, img_bgr.shape)
+            img_bgr = np.clip(
+                img_bgr.astype(np.float32) + noise.astype(np.float32),
+                0, 255,
+            ).astype(np.uint8)
+            pp["noise_sigma"] = round(sigma, 2)
+        if random.random() < self.jpeg_prob:
+            q = random.randint(
+                self.jpeg_quality_min, self.jpeg_quality_max
+            )
+            ok, buf = cv2.imencode(
+                ".jpg", img_bgr, [cv2.IMWRITE_JPEG_QUALITY, q]
+            )
+            if ok:
+                img_bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+                pp["jpeg_quality"] = q
+        return img_bgr, pp
 
     def _make_soft_target(self, target_mask_u8_0_1):
         if random.random() >= self.soft_target_prob:
@@ -606,7 +767,9 @@ class CopyMoveGenerator:
     def generate(self, image_info, image_path, annotations, coco,
                  stuff_coco=None, surface_map=None,
                  use_perspective_scale=False,
-                 use_supercategory_pool=False):
+                 use_supercategory_pool=False,
+                 exclude_ann_ids=None, banned_cats=None,
+                 out_suffix=""):
         """Attempt to generate a copy-move forged image.
 
         Parameters
@@ -627,6 +790,14 @@ class CopyMoveGenerator:
             Use depth-aware scaling based on vertical position.
         use_supercategory_pool : bool
             Expand candidate pool via COCO supercategories.
+        exclude_ann_ids : set, optional
+            Annotation ids already used as sources for this image
+            (multi-variant generation must pick a different object).
+        banned_cats : set, optional
+            Category ids that have hit their dataset quota.
+        out_suffix : str
+            Suffix appended to output basenames (e.g. '_v1') so
+            multiple variants of one image don't collide.
 
         Returns
         -------
@@ -668,7 +839,14 @@ class CopyMoveGenerator:
 
         # Multi-try: attempt multiple annotations/transforms/destinations
         last_skip = "SKIP: all_tries_exhausted"
-        ann_pool = suitable_anns[:]
+        ann_pool = [
+            a for a in suitable_anns
+            if not (exclude_ann_ids and a.get("id") in exclude_ann_ids)
+            and not (banned_cats
+                     and a.get("category_id") in banned_cats)
+        ]
+        if not ann_pool:
+            return "SKIP: no_suitable_annotations"
         random.shuffle(ann_pool)
         ann_pool = ann_pool[: max(1, min(self.k_ann, len(ann_pool)))]
 
@@ -715,8 +893,14 @@ class CopyMoveGenerator:
             hard_neg_mask = self.build_hard_negative_mask(
                 annotations, ann, coco, (h_img, w_img)
             )
-            kernel_iso = np.ones((5, 5), np.uint8)
-            dilated_src = cv2.dilate(src_mask_full, kernel_iso, iterations=1)
+            r = self.isolation_dilation_px
+            if r > 0:
+                kernel_iso = np.ones((2 * r + 1, 2 * r + 1), np.uint8)
+                dilated_src = cv2.dilate(
+                    src_mask_full, kernel_iso, iterations=1
+                )
+            else:
+                dilated_src = src_mask_full
             if np.any((dilated_src > 0) & (hard_neg_mask > 0)):
                 last_skip = "SKIP: object_not_isolated"
                 continue
@@ -785,40 +969,15 @@ class CopyMoveGenerator:
                         (int(cx + jx), int(cy + jy))
                     )
 
-            # ── Floating-object prevention constants ─────────────────────
-            # Ground-type COCO category IDs: people, vehicles, animals,
-            # kitchen items, food, furniture — anything that should never
-            # appear floating in the sky.  Flying categories (bird=16,
-            # airplane=5, kite=38) are explicitly excluded.
-            _GROUND_CATS = {
-                1,   # person
-                2, 3, 4, 6, 7, 8,    # bicycle, car, motorcycle, bus, train, truck
-                9, 10, 11,            # boat, traffic light, fire hydrant
-                13, 14, 15,           # stop sign, parking meter, bench
-                17, 18, 19, 20, 21, 22, 23, 24, 25,  # animals (cat→bear)
-                27, 28,              # backpack, umbrella
-                31, 32, 33,          # handbag, tie, suitcase
-                39, 40, 41, 42, 43,  # bottle, wine glass, cup, fork, knife
-                44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55,  # spoon→sandwich
-                56, 57, 58, 59, 60,  # broccoli→hot dog
-                61, 62, 63, 64, 65,  # pizza→cake
-                67, 70,              # chair, toilet
-                72, 73, 74, 75, 76, 77, 78, 79, 80,  # tv→scissors
-                81, 82, 84, 85, 86, 87, 88, 89, 90,  # hair drier→toothbrush
-            }
-
             # Category-specific Y-floors (pixels from top must be ABOVE
             # this value for the destination center to be valid).
             # Rationale: vehicles and large animals sit firmly on the ground
             # and the sky in outdoor scenes often fills the top 50%+ of frame.
             # A single 40% threshold is too permissive for trains/cars.
-            _VEHICLE_CATS = {2, 3, 4, 6, 7, 8}   # bicycle→truck
-            _LARGE_ANIMAL_CATS = {22, 23, 24, 25}  # elephant, bear, zebra, giraffe
-
-            if src_cat in _VEHICLE_CATS:
+            if src_cat in VEHICLE_CATS:
                 # Vehicles are always firmly on the ground: 55% floor
                 _ABS_Y_FLOOR = int(0.55 * h_img)
-            elif src_cat in _LARGE_ANIMAL_CATS:
+            elif src_cat in LARGE_ANIMAL_CATS:
                 # Large animals also need a tighter constraint: 50%
                 _ABS_Y_FLOOR = int(0.50 * h_img)
             else:
@@ -826,19 +985,43 @@ class CopyMoveGenerator:
                 # (slightly tighter than the previous 40%)
                 _ABS_Y_FLOOR = int(0.42 * h_img)
 
-            # F4: 3-tier relaxation ladder for vertical placement.
+            # Support surface the source object rests on (what is
+            # directly under its footprint). This is the anchor for
+            # the gravity gate applied to every candidate destination.
+            src_support = 0
+            if surface_map is not None:
+                src_support = support_surface_code(
+                    surface_map, src_mask_full[
+                        src_y:src_y + src_h, src_x:src_x + src_w
+                    ],
+                    x0=src_x, y0=src_y,
+                )
+
+            # F4: relaxation ladder for vertical placement.
             # Tier 1 (strict): +-15% of src_center_y
             # Tier 2 (relaxed): +-30% of src_center_y
-            # Tier 3 (permissive): no vertical constraint
-            # Metadata records which tier was accepted.
+            # Tier 3 (permissive): no vertical constraint — only for
+            # non-ground categories (birds, planes, kites). Ground
+            # objects with no valid in-band destination are skipped
+            # rather than pasted at an arbitrary height.
             _HORIZ_TIERS = [
                 ("strict",     0.15),
                 ("relaxed",    0.30),
-                ("permissive", None),
             ]
+            if src_cat not in GROUND_CATS:
+                _HORIZ_TIERS.append(("permissive", None))
 
             for _ in range(max(1, self.k_transform)):
                 scale_factor, rotation_angle, do_flip = self._sample_transform()
+
+                # Never mirror text-bearing / chiral categories:
+                # a flipped STOP sign or clock face is an instant
+                # human-visible giveaway.
+                if src_cat in NO_FLIP_CATS:
+                    do_flip = False
+                # Rigid mounted/man-made objects are always plumb.
+                if src_cat in NO_ROTATE_CATS:
+                    rotation_angle = 0.0
 
                 # F1 + Depth Realism: compute perspective scale then hard-gate
                 # on minimum pixel area to reject invisible/floating objects.
@@ -874,7 +1057,7 @@ class CopyMoveGenerator:
                     # 40% mark (the horizon floor).  This catches the case
                     # where perspective_scale correctly shrinks the object
                     # but the chosen approx_dst_cy is still in sky territory.
-                    if src_cat in _GROUND_CATS and approx_dst_cy < _ABS_Y_FLOOR:
+                    if src_cat in GROUND_CATS and approx_dst_cy < _ABS_Y_FLOOR:
                         last_skip = "SKIP: ground_object_above_horizon"
                         logger.debug(
                             "Skipping: ground cat %d dst_cy=%d < floor=%d",
@@ -937,7 +1120,8 @@ class CopyMoveGenerator:
                     last_skip = "SKIP: tamper_too_small"
                     continue
 
-                obj_rgb = self._apply_patch_hsv_shift(obj_rgb)
+                obj_rgb, patch_hsv_applied = \
+                    self._apply_patch_hsv_shift(obj_rgb)
                 obj_alpha = (obj_mask_bin * 255).astype(np.uint8)
 
                 # Poisson-only dilation/border constraints.
@@ -1042,8 +1226,49 @@ class CopyMoveGenerator:
                     # passes the horizon band, the actual dst_cy after
                     # clamping may still be above the horizon floor for
                     # ground-type objects.  Reject unconditionally.
-                    if src_cat in _GROUND_CATS and dst_cy < _ABS_Y_FLOOR:
+                    if src_cat in GROUND_CATS and dst_cy < _ABS_Y_FLOOR:
                         continue
+
+                    # PERSPECTIVE CONSISTENCY: scale_factor was derived
+                    # from an *approximate* destination height, but the
+                    # cross-correlation may have picked a spot far from
+                    # it. Reject destinations where the applied scale no
+                    # longer matches the depth implied by the actual
+                    # dst_cy (allowing for the sampled jitter band).
+                    if use_perspective_scale:
+                        expected = 1.0 + 0.5 * (
+                            (dst_cy - src_center_y) / max(h_img, 1)
+                        )
+                        ratio = scale_factor / max(expected, 1e-6)
+                        if ratio < 0.80 or ratio > 1.25:
+                            continue
+
+                    # SUPPORT-SURFACE GATE (gravity check).
+                    # The bbox-dominant surface check below is easily
+                    # fooled: a toilet standing on a floor in front of a
+                    # wall has a wall-dominated bbox, so wall pixels at
+                    # mid-height pass as "compatible" and the object
+                    # floats. Instead, compare what is directly under
+                    # the pasted mask's footprint with what was under
+                    # the source object's footprint.
+                    if surface_map is not None and src_support > 0:
+                        dst_support = support_surface_code(
+                            surface_map, obj_mask_bin,
+                            x0=dst_x, y0=dst_y,
+                        )
+                        if not is_support_compatible(
+                            src_support, dst_support
+                        ):
+                            continue
+                        # Ground-supported object over unlabeled pixels
+                        # in the upper half of the frame → likely wall
+                        # or sky gap in the stuff labels. Reject.
+                        if (
+                            dst_support == 0
+                            and src_support == 1
+                            and dst_cy < int(0.55 * h_img)
+                        ):
+                            continue
 
                     # Surface compatibility check
                     if surface_map is not None:
@@ -1064,7 +1289,7 @@ class CopyMoveGenerator:
                         # allows trains to land on unlabeled sky.
                         if (
                             dst_surface == 0
-                            and src_cat in _GROUND_CATS
+                            and src_cat in GROUND_CATS
                             and dst_cy < int(0.50 * h_img)
                         ):
                             continue
@@ -1132,10 +1357,10 @@ class CopyMoveGenerator:
                     if (sim is not None
                             and sim < self.hsv_hist_intersect_thresh):
                         continue
+                    dest_bg_mean = self._mean_color_bgr(
+                        dest_roi, dest_ring
+                    )
                     if sim is None and src_bg_mean is not None:
-                        dest_bg_mean = self._mean_color_bgr(
-                            dest_roi, dest_ring
-                        )
                         if dest_bg_mean is not None:
                             dist = float(np.linalg.norm(
                                 dest_bg_mean - src_bg_mean
@@ -1143,15 +1368,80 @@ class CopyMoveGenerator:
                             if dist > self.semantic_bg_color_thresh:
                                 continue
 
+                    # LIGHTING CONSISTENCY: the HSV-histogram check
+                    # above compares hue/saturation but is loose on
+                    # brightness, so a sunlit object could land in a
+                    # shadowed region (or vice versa). Compare mean
+                    # luminance (BT.601) of the two background rings.
+                    if (
+                        src_bg_mean is not None
+                        and dest_bg_mean is not None
+                    ):
+                        _lum = np.array([0.114, 0.587, 0.299])
+                        lum_delta = abs(float(
+                            (src_bg_mean - dest_bg_mean) @ _lum
+                        ))
+                        if lum_delta > self.luminance_delta_thresh:
+                            continue
+
+                    # BOUNDARY SMOOTHING: COCO polygon (and GrabCut)
+                    # contours are coarse — visible straight segments
+                    # and staircase jaggies. Gaussian-smooth the mask
+                    # and re-binarise to round off the contour.
+                    _smooth = cv2.GaussianBlur(
+                        obj_mask_bin.astype(np.float32), (0, 0), 1.5
+                    )
+                    smooth_bin = (_smooth > 0.5).astype(np.uint8)
+
+                    # HALO REMOVAL: erode the paste mask by 1px so the
+                    # boundary fringe (a faint halo of the source's
+                    # original background baked into segmentation
+                    # edges) is left behind. The trimap below uses the
+                    # same mask, so ground truth stays exact.
+                    paste_mask = cv2.erode(
+                        smooth_bin,
+                        np.ones((3, 3), np.uint8),
+                        iterations=1,
+                    )
+                    if not np.any(paste_mask > 0):
+                        continue
+
                     # ── Compose ──────────────────────────────
                     mixed_clone = img.copy()
-                    
-                    # STRICT FORENSIC PURITY: Absolute Pixel-to-Pixel Paste
-                    # Zero Poisson, Zero Blending, Zero Feathering.
                     roi = mixed_clone[y1:y2, x1:x2]
-                    # Direct boolean pixel copy
-                    roi[obj_mask_bin > 0] = obj_rgb[obj_mask_bin > 0]
+
+                    if self.feather_radius > 0:
+                        # MILD FEATHERED PASTE: alpha-composite over a
+                        # ~feather_radius px band so the copy settles
+                        # into the destination instead of a razor
+                        # cutout. The interior stays a bit-exact copy;
+                        # only the boundary band is mixed.
+                        alpha = self._alpha_feather(
+                            (paste_mask * 255).astype(np.uint8),
+                            self.feather_radius,
+                        ).astype(np.float32) / 255.0
+                        # INWARD-ONLY FEATHER: zero the alpha outside
+                        # paste_mask so blending never touches a pixel
+                        # the trimap labels background. Every changed
+                        # pixel is inside the GT mask (gate-1 IoU ~1.0).
+                        alpha[paste_mask == 0] = 0.0
+                        alpha3 = alpha[..., None]
+                        comp = (
+                            alpha3 * obj_rgb.astype(np.float32)
+                            + (1.0 - alpha3) * roi.astype(np.float32)
+                        )
+                        roi = np.clip(comp, 0, 255).astype(np.uint8)
+                    else:
+                        # Hard paste: absolute pixel-to-pixel copy.
+                        roi[paste_mask > 0] = obj_rgb[paste_mask > 0]
+
                     mixed_clone[y1:y2, x1:x2] = roi
+
+                    # ── Stage 2 post-processing (no-op in Stage 1:
+                    # all probabilities are 0). Photometric only, so
+                    # the masks below stay pixel-exact.
+                    mixed_clone, pp_meta = \
+                        self._post_process_composite(mixed_clone)
 
                     # ── Tri-map ──────────────────────────────
                     tri_map = np.zeros(
@@ -1159,7 +1449,7 @@ class CopyMoveGenerator:
                     )
                     tri_map[src_mask_full > 0] = 128
                     tri_map[y1:y2, x1:x2][
-                        obj_mask_bin > 0
+                        paste_mask > 0
                     ] = 255
 
                     # ── Binary forgery mask ──────────────────
@@ -1186,6 +1476,7 @@ class CopyMoveGenerator:
                         soft_name = (
                             f"{image_info['file_name']}"
                             .replace('.jpg', '')
+                            + out_suffix
                             + "_soft_target.png"
                         )
                         cv2.imwrite(
@@ -1217,7 +1508,7 @@ class CopyMoveGenerator:
                     # ── Save all outputs ─────────────────────
                     out_base = image_info['file_name'].replace(
                         '.jpg', ''
-                    )
+                    ) + out_suffix
                     img_fname = f"{out_base}.png"
                     mask_fname = f"{out_base}_mask.png"
                     binary_fname = f"{out_base}_binary.png"
@@ -1264,6 +1555,7 @@ class CopyMoveGenerator:
                         self._laplacian_var(dest_roi)
                     )
                     output_data = {
+                        'image_id': int(image_info['id']),
                         'image_filename': img_fname,
                         'mask_filename': mask_fname,
                         'binary_mask_filename': binary_fname,
@@ -1283,6 +1575,8 @@ class CopyMoveGenerator:
                         'target_bbox': str(
                             (dst_x, dst_y, pat_w, pat_h)
                         ),
+                        'source_ann_id': ann.get('id', -1),
+                        'variant': out_suffix or '_v0',
                         'source_category_id': src_cat,
                         'source_category_name': cat_name,
                         'source_supercategory': supercat,
@@ -1299,6 +1593,17 @@ class CopyMoveGenerator:
                         ),
                         'image_height': h_img,
                         'image_width': w_img,
+                        # Which source-selection strictness produced
+                        # this row: 'strict' or 'relaxed_v1' (recovery)
+                        'gate_profile': self.gate_profile,
+                        # Stage 2 post-processing provenance
+                        # (all None/0 in Stage 1)
+                        'patch_hsv_applied': patch_hsv_applied,
+                        'jpeg_quality': pp_meta['jpeg_quality'],
+                        'noise_sigma': pp_meta['noise_sigma'],
+                        'blur': pp_meta['blur'],
+                        'contrast': pp_meta['contrast'],
+                        'brightness': pp_meta['brightness'],
                     }
 
                     logger.info(

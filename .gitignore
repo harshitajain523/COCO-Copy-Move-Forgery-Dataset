@@ -1,6 +1,49 @@
-venv/
+# Generated data (published via Hugging Face, never committed)
 output/
+hf_export/
+*.jsonl
+metadata*.csv
+rejected.csv
+
+# Sample assets: keep the small curated pairs, not the full sheets
+samples/contact_sheet_*.png
+
+# Environments
+venv/
+.venv/
+env/
+
+# Model checkpoints / caches
+*.pt
+*.pth
+*.ckpt
+.cache/
+~/.cache/
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Notebooks (opt in explicitly if one is worth publishing)
+*.ipynb
+
+# Secrets / local config
+.env
+.env.*
+*.key
+*.pem
+secrets.*
+
+# Runtime artefacts
 *.log
+*.pid
+
+# OS / editor
 .DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.cursor/
