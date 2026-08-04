@@ -1,6 +1,7 @@
 # Generated data (published via Hugging Face, never committed)
 output/
 hf_export/
+wds_export/
 *.jsonl
 metadata*.csv
 rejected.csv
