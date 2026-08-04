@@ -32,8 +32,20 @@ class StageConfig:
     min_area_ratio: float = 0.02
     max_target_area_ratio: float = 0.20
     min_laplacian_var: float = 25.0
-    min_resolution: int = 400
-    min_target_compactness: float = 0.04
+    # 400→320 (2026-07-07 scale decision): min-side floor. 400 was
+    # the third-largest yield killer; 320 keeps VGA-class images.
+    min_resolution: int = 320
+    # Compactness floor raised from 0.04 to 0.07:
+    # a value of 0.04 allowed GrabCut-trimmed torso fragments
+    # (very jagged, low isoperimetric ratio) to pass through.
+    min_target_compactness: float = 0.07
+    # Source-selection strictness. Defaults = the strict profile the
+    # main Stage 1 run used; the recovery preset relaxes them and
+    # tags its rows via gate_profile so they remain separable.
+    edge_margin_px: int = 15
+    isolation_dilation_px: int = 2
+    min_fill_ratio: float = 0.25
+    gate_profile: str = "strict"
 
     # ── Blending ─────────────────────────────────────────────
     blend_mode: str = "paste"
@@ -43,6 +55,7 @@ class StageConfig:
     semantic_radius_px: int = 160
     semantic_bg_color_thresh: float = 55.0
     hsv_hist_intersect_thresh: float = 0.35
+    luminance_delta_thresh: float = 45.0
     padding_px: int = 12
 
     # ── Transforms ───────────────────────────────────────────
@@ -82,20 +95,27 @@ class StageConfig:
     soft_alpha_max: float = 1.0
 
     # ── Pipeline tunables ────────────────────────────────────
-    max_side: int = 800
     num_images: int = 10
     subset_size: int = 200
     use_perspective_scale: bool = False
     use_stuff_annotations: bool = False
     use_supercategory_pool: bool = False
+    # Max forgeries per source image (each uses a different source
+    # object). >1 is required to reach 20k from COCO's 118k images
+    # at strict-quality yield rates.
+    variants_per_image: int = 1
+    # Per-category share cap (fraction of num_images). Prevents
+    # easy-to-isolate categories (clocks, toilets) from dominating.
+    category_share_cap: float = 0.05
 
     def to_generator_kwargs(self, output_dir_tampered, output_dir_masks):
         """Convert to kwargs dict for CopyMoveGenerator.__init__."""
         # Exclude pipeline-level fields that aren't generator params
         exclude = {
-            "name", "description", "max_side", "num_images",
+            "name", "description", "num_images",
             "subset_size", "use_perspective_scale",
             "use_stuff_annotations", "use_supercategory_pool",
+            "variants_per_image", "category_share_cap",
         }
         kwargs = {
             k: v for k, v in asdict(self).items()
@@ -114,9 +134,12 @@ STAGE1_CLEAN = StageConfig(
         "Pure copy signal for contrastive pretraining. "
         "Zero post-processing. The model learns what a copy IS."
     ),
-    # Blending: hard paste only — no Poisson, no feathering
+    # Blending: direct paste with a mild 2px boundary feather —
+    # the copy signal stays bit-exact in the interior, but the
+    # razor-sharp cutout edge (a giveaway no real forger leaves)
+    # is softened into the destination.
     blend_mode="paste",
-    feather_radius=0,
+    feather_radius=2,
     # Transforms: mild affine (the copy should be recognisable)
     transform_policy="coverage_like",
     flip_prob=0.3,
@@ -131,14 +154,19 @@ STAGE1_CLEAN = StageConfig(
     use_perspective_scale=True,
     use_stuff_annotations=True,
     use_supercategory_pool=True,
-    # Retry budget: higher for clean data (more selective)
-    k_ann=5,
+    # Retry budget: higher for clean data (more selective).
+    # k_ann=12 ≈ "try every suitable annotation" for most images.
+    k_ann=12,
     k_transform=4,
     k_dest=50,
     # Pipeline
-    num_images=10,
-    subset_size=500,
-    max_side=0,  # No downscale — keep original resolution
+    num_images=1000,
+    subset_size=40000,
+    # 2→4 (2026-07-07 scale decision): each variant uses a different
+    # source object; images that pass the gates once often support
+    # several distinct forgeries.
+    variants_per_image=4,
+    category_share_cap=0.05,
 )
 
 
@@ -184,7 +212,42 @@ STAGE2_SYNTHETIC = StageConfig(
     # Pipeline
     num_images=10,
     subset_size=500,
-    max_side=0,  # Keep original resolution
+)
+
+
+import dataclasses as _dc
+
+# Recovery pass: identical to Stage 1 except mildly relaxed
+# SOURCE-selection gates (edge margin, isolation, fill floor).
+# Placement/plausibility gates (support surface, horizon, perspective,
+# no-flip, luminance) are untouched. Rows are tagged relaxed_v1.
+STAGE1_RECOVERY = _dc.replace(
+    STAGE1_CLEAN,
+    name="stage1_recovery",
+    description=(
+        "Recovery pass over strict-run failures: relaxed source "
+        "selection (edge 15→8px, isolation 5x5→3x3, fill 0.25→0.20), "
+        "identical placement gates. Rows tagged gate_profile=relaxed_v1."
+    ),
+    edge_margin_px=8,
+    isolation_dilation_px=1,
+    min_fill_ratio=0.20,
+    gate_profile="relaxed_v1",
+)
+
+# relaxed_v2 (user-approved 2026-07-18): additionally lowers the
+# minimum paste size from 2% to 1.2% of image area (absolute 1000px
+# floor unchanged). Small copy-moves are the realistic hard case in
+# the CMFD literature; most COCO objects fall below the 2% floor.
+STAGE1_RECOVERY_V2 = _dc.replace(
+    STAGE1_RECOVERY,
+    name="stage1_recovery_v2",
+    description=(
+        "relaxed_v1 source gates + min paste size 2%→1.2% of image "
+        "area. Placement gates identical to strict."
+    ),
+    min_area_ratio=0.012,
+    gate_profile="relaxed_v2",
 )
 
 
@@ -193,6 +256,8 @@ STAGE2_SYNTHETIC = StageConfig(
 _STAGES = {
     "stage1": STAGE1_CLEAN,
     "stage1_clean": STAGE1_CLEAN,
+    "stage1_recovery": STAGE1_RECOVERY,
+    "stage1_recovery_v2": STAGE1_RECOVERY_V2,
     "stage2": STAGE2_SYNTHETIC,
     "stage2_synthetic": STAGE2_SYNTHETIC,
 }

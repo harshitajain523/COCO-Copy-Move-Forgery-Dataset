@@ -79,7 +79,10 @@ def show_samples(meta_path, coco_images_dir, output_dir,
         tampered_path = os.path.join(
             tampered_dir, row["image_filename"]
         )
-        orig_name = row["image_filename"].replace(".png", ".jpg")
+        # Strip any variant suffix (_v1 etc.) — the original COCO
+        # image has no such suffix.
+        stem = os.path.splitext(row["image_filename"])[0]
+        orig_name = stem.split("_v")[0] + ".jpg"
         orig_path = os.path.join(coco_images_dir, orig_name)
         mask_path = os.path.join(mask_dir, row["mask_filename"])
 
@@ -158,9 +161,15 @@ def show_samples(meta_path, coco_images_dir, output_dir,
 
 
 if __name__ == "__main__":
-    # Standalone usage (default paths)
-    out = "/home/harshita/projects/coco-cmfd/output"
-    coco = "/home/harshita/coco/train2017"
+    # Standalone usage. Paths resolve from the environment:
+    #   CMFD_OUTPUT (default <project>/output)
+    #   COCO_ROOT   (default ~/coco)
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = os.environ.get("CMFD_OUTPUT", os.path.join(_root, "output"))
+    coco = os.path.join(
+        os.environ.get("COCO_ROOT", os.path.expanduser("~/coco")),
+        "train2017",
+    )
 
     # Try stage-specific directories first
     for stage in ["stage1_clean", "stage2_synthetic"]:

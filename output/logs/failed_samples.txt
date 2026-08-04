@@ -1,5 +1,0 @@
-Total Failed Attempts: 3
-
-SKIP: tamper_too_small
-SKIP: no_suitable_annotations
-SKIP: tamper_too_small

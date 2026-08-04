@@ -1,0 +1,51 @@
+Creative Commons Attribution 4.0 International (CC BY 4.0)
+
+Copyright (c) 2026 Harshita Jain
+
+This license applies to the COCO-CMFD DATASET: the generated forged
+images, ground-truth masks (trimap, binary, patch-level, hard-negative)
+and accompanying metadata.
+
+The generation source code in this repository is licensed separately
+under the MIT License; see LICENSE.
+
+================================================================
+Derivation and third-party terms
+================================================================
+
+The forged images are derived from the MS-COCO 2017 train split
+(https://cocodataset.org). Two distinct upstream terms apply:
+
+1. COCO ANNOTATIONS (used here for instance masks and stuff labels)
+   are released by the COCO Consortium under CC BY 4.0.
+
+2. COCO IMAGES are sourced from Flickr and remain subject to the
+   terms of their respective owners. The COCO Consortium does not own
+   the copyright of the images and makes them available under the
+   Flickr Terms of Use. Because every image in this dataset is a
+   derivative of a COCO image, downstream users must comply with those
+   terms in addition to this license.
+
+The CC BY 4.0 grant above therefore covers the contribution made by
+this work — the forgery generation, the ground-truth masks, and the
+metadata — and cannot grant rights over the underlying photographic
+content that the author does not hold.
+
+Users intending commercial redistribution of the imagery should
+review the Flickr Terms of Use and the COCO terms at
+https://cocodataset.org/#termsofuse.
+
+================================================================
+CC BY 4.0 summary
+================================================================
+
+You are free to:
+  Share  — copy and redistribute the material in any medium or format
+  Adapt  — remix, transform, and build upon the material
+           for any purpose, even commercially.
+
+Under the following terms:
+  Attribution — You must give appropriate credit, provide a link to
+  the license, and indicate if changes were made.
+
+Full licence text: https://creativecommons.org/licenses/by/4.0/legalcode
