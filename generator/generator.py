@@ -1552,6 +1552,13 @@ class CopyMoveGenerator:
                     )
                     output_data = {
                         'image_id': int(image_info['id']),
+                        # The source photograph's own Creative Commons
+                        # terms, carried through so the release licence
+                        # is auditable per row rather than asserted for
+                        # the corpus as a whole. NoDerivs photographs
+                        # are excluded upstream at selection, so this
+                        # should never be 3 or 6.
+                        'coco_license_id': image_info.get('license'),
                         'image_filename': img_fname,
                         'mask_filename': mask_fname,
                         'binary_mask_filename': binary_fname,

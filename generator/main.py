@@ -570,7 +570,13 @@ def run_stage(stage_name, num_images=None, seed=SEED,
             }
             try:
                 result = generator.generate(
-                    {"id": img_id, "file_name": file_name},
+                    {
+                        "id": img_id,
+                        "file_name": file_name,
+                        # Carried through so each row can record the
+                        # source photograph's own licence.
+                        "license": img_info.get("license"),
+                    },
                     img_path,
                     anns,
                     coco,

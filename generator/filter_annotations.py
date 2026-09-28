@@ -15,6 +15,14 @@ import os
 import random
 import sys
 
+# MS-COCO aggregated Flickr photographs without relicensing them: each
+# image keeps its own Creative Commons terms in its `license` field.
+# Ids 3 and 6 are the two NoDerivs variants, under which a copy-move
+# composite -- a derivative work -- may not be produced, let alone
+# redistributed. The filter lives here, at selection, so the corpus is
+# clean by construction rather than by subtraction afterwards.
+NODERIVS_LICENSE_IDS = frozenset({3, 6})
+
 
 def filter_annotations(input_path, output_path, n_images, seed,
                        shard=0, num_shards=1):
@@ -38,6 +46,16 @@ def filter_annotations(input_path, output_path, n_images, seed,
         f"Full dataset: {len(images)} images, "
         f"{len(annotations)} annotations"
     )
+
+    eligible = [
+        img for img in images
+        if img.get("license") not in NODERIVS_LICENSE_IDS
+    ]
+    print(
+        f"Licence filter: {len(eligible)} of {len(images)} images "
+        f"eligible ({len(images) - len(eligible)} NoDerivs removed)"
+    )
+    images = eligible
 
     # Pick random subset of images
     rng = random.Random(seed)
