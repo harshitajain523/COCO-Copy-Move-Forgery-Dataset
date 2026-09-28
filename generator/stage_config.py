@@ -46,6 +46,13 @@ class StageConfig:
     min_fill_ratio: float = 0.25
     gate_profile: str = "strict"
 
+    # ── Source regions ───────────────────────────────────────
+    # Fraction of samples whose copied region is a random polygon
+    # rather than an annotated object. COCO annotates only objects, so
+    # at 0.0 every forged region in the corpus is one, and a detector
+    # can reach the answer through object-ness instead of duplication.
+    background_region_prob: float = 0.0
+
     # ── Blending ─────────────────────────────────────────────
     blend_mode: str = "paste"
     feather_radius: int = 0
@@ -216,6 +223,96 @@ STAGE2_SYNTHETIC = StageConfig(
 
 import dataclasses as _dc
 
+
+STAGE3_TRANSFER = StageConfig(
+    name="stage3_transfer",
+    description=(
+        "Built for transfer to real forgeries rather than for a clean "
+        "copy signal. Region sizes span the benchmarks' range, every "
+        "image is compressed, and the copy is blended and colour-"
+        "shifted the way a forger leaves it."
+    ),
+    # Region size. Measured on the benchmarks, 67.5% of CoMoFoD and
+    # 27.2% of CASIA images carry a forged region under 4% of the
+    # frame, and 25% of CASIA is over 16%. Stage 1's 2% floor put
+    # nothing at all below 2%, so the regime that dominates the
+    # benchmarks was absent from both training and validation, and
+    # validation could not see the model failing there. The absolute
+    # floor moves with it: at COCO's native ~500x375, 0.3% is ~300 px,
+    # and a 1000 px floor would re-impose the ratio floor by itself.
+    min_area=300,
+    min_area_ratio=0.003,
+    max_area_ratio=0.35,
+    max_target_area_ratio=0.40,
+    # Compactness: small regions are jagged more often than large ones
+    # simply because the mask has fewer pixels to be smooth with.
+    min_target_compactness=0.05,
+    # Blending. A razor cutout over an untouched background is the one
+    # thing a real forger never leaves, and destroying the partner of a
+    # pasted region still leaves 23.3% of the model's response standing,
+    # which is response to the paste itself rather than to duplication.
+    blend_mode="paste",
+    feather_radius=3,
+    soft_target_prob=0.6,
+    soft_sigma_min=1.0,
+    soft_sigma_max=4.0,
+    soft_alpha_min=0.88,
+    soft_alpha_max=1.0,
+    # The copy as a forger leaves it: colour-matched to its new
+    # surroundings rather than carried over untouched.
+    patch_hsv_shift_prob=0.6,
+    patch_v_min=0.82,
+    patch_v_max=1.18,
+    patch_s_min=0.85,
+    patch_s_max=1.15,
+    # Just under half the corpus copies a polygon instead of an
+    # object. Objects stay the majority because the benchmarks do copy
+    # objects most of the time; the point is that the model cannot
+    # assume it.
+    background_region_prob=0.45,
+    # Transforms over the full range the benchmarks present.
+    transform_policy="full_aug",
+    flip_prob=0.5,
+    # Compression applies to every image, not a fraction: a forgery is
+    # saved after it is made, and an uncompressed composite is an
+    # artifact of the generator rather than of forgery. Whole-image
+    # degradation costs this model at most 0.028 of F1, so it removes a
+    # cue the corpus should not be offering at almost no cost to the
+    # signal.
+    jpeg_prob=1.0,
+    jpeg_quality_min=60,
+    jpeg_quality_max=95,
+    noise_prob=0.5,
+    noise_sigma_min=1.0,
+    noise_sigma_max=8.0,
+    bc_prob=0.35,
+    contrast_min=0.82,
+    contrast_max=1.18,
+    brightness_max_abs=18,
+    blur_prob=0.2,
+    # Stuff annotations put background regions -- grass, road, sky --
+    # in the source pool beside object instances. Every sample in the
+    # released corpus copies a whole annotated object, and a copy-move
+    # detector that has only ever seen objects has an object detector
+    # available to it as a shortcut.
+    use_stuff_annotations=True,
+    use_supercategory_pool=True,
+    use_perspective_scale=True,
+    # Source gates at the recovery profile: the strict profile was
+    # tuned for a 2% floor and rejects most small regions outright.
+    edge_margin_px=8,
+    isolation_dilation_px=1,
+    min_fill_ratio=0.20,
+    gate_profile="transfer_v1",
+    k_ann=12,
+    k_transform=4,
+    k_dest=50,
+    num_images=0,
+    subset_size=0,
+    variants_per_image=4,
+    category_share_cap=0.04,
+)
+
 # Recovery pass: identical to Stage 1 except mildly relaxed
 # SOURCE-selection gates (edge margin, isolation, fill floor).
 # Placement/plausibility gates (support surface, horizon, perspective,
@@ -259,6 +356,8 @@ _STAGES = {
     "stage1_recovery_v2": STAGE1_RECOVERY_V2,
     "stage2": STAGE2_SYNTHETIC,
     "stage2_synthetic": STAGE2_SYNTHETIC,
+    "stage3": STAGE3_TRANSFER,
+    "stage3_transfer": STAGE3_TRANSFER,
 }
 
 

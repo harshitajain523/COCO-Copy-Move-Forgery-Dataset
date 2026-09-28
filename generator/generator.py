@@ -1,6 +1,7 @@
 import cv2
 import json
 import logging
+import math
 import numpy as np
 import os
 import random
@@ -139,7 +140,9 @@ class CopyMoveGenerator:
         soft_sigma_max=3.0,
         soft_alpha_min=0.93,
         soft_alpha_max=1.0,
+        background_region_prob=0.0,
     ):
+        self.background_region_prob = float(background_region_prob)
         self.output_dir_tampered = output_dir_tampered
         self.output_dir_masks = output_dir_masks
         self.min_area = min_area
@@ -214,6 +217,84 @@ class CopyMoveGenerator:
         ):
             os.makedirs(d, exist_ok=True)
 
+    def _synthetic_region_anns(self, image_info, img_shape, rng,
+                               count, area_lo, area_hi):
+        """Build random polygon regions to copy, alongside COCO objects.
+
+        Every annotated region in COCO is an object, so a corpus built
+        only from annotations teaches a copy-move detector that forged
+        regions are objects -- and an object detector is then a shortcut
+        to the answer that does not survive contact with a benchmark,
+        where textures, background and parts of objects are copied too.
+        The polygons here carry no semantics at all: a region is defined
+        by where its boundary falls, not by what is inside it.
+
+        They also reach sizes annotations cannot. Objects large enough
+        to fill a sixth of the frame and still pass the isolation gates
+        barely exist, so the large end of the size range is unreachable
+        from annotations alone; a polygon can be any size by
+        construction.
+
+        Areas are drawn uniformly in log space so each octave of region
+        size is represented about equally, rather than the corpus
+        inheriting whatever size distribution COCO's objects happen to
+        have.
+        """
+        h, w = img_shape[:2]
+        img_area = float(h * w)
+        margin = max(4, int(0.02 * min(h, w)))
+        out = []
+        for k in range(count):
+            frac = math.exp(rng.uniform(math.log(area_lo), math.log(area_hi)))
+            target = frac * img_area
+            n_vert = rng.randint(3, 8)
+            angles = sorted(rng.uniform(0.0, 2.0 * math.pi)
+                            for _ in range(n_vert))
+            radii = [rng.uniform(0.55, 1.0) for _ in range(n_vert)]
+            pts = np.array(
+                [[math.cos(a) * r, math.sin(a) * r]
+                 for a, r in zip(angles, radii)],
+                dtype=np.float64,
+            )
+            # Shoelace area of the unit-scale polygon, used to solve for
+            # the linear scale that lands it on the requested area.
+            shoelace = 0.5 * abs(
+                float(np.dot(pts[:, 0], np.roll(pts[:, 1], -1)))
+                - float(np.dot(pts[:, 1], np.roll(pts[:, 0], -1)))
+            )
+            if shoelace <= 1e-9:
+                continue
+            pts *= math.sqrt(target / shoelace)
+            span_x = float(pts[:, 0].max() - pts[:, 0].min())
+            span_y = float(pts[:, 1].max() - pts[:, 1].min())
+            if span_x >= w - 2 * margin or span_y >= h - 2 * margin:
+                continue
+            pts[:, 0] += rng.uniform(
+                margin - float(pts[:, 0].min()),
+                w - margin - float(pts[:, 0].max()),
+            )
+            pts[:, 1] += rng.uniform(
+                margin - float(pts[:, 1].min()),
+                h - margin - float(pts[:, 1].max()),
+            )
+            out.append({
+                # Negative ids cannot collide with COCO annotation ids,
+                # so the SAM-mask lookup simply misses and the polygon
+                # is used as drawn.
+                "id": -(k + 1),
+                "image_id": int(image_info["id"]),
+                "category_id": -1,
+                "segmentation": [[float(v) for pt in pts for v in pt]],
+                "area": float(target),
+                "bbox": [
+                    float(pts[:, 0].min()), float(pts[:, 1].min()),
+                    span_x, span_y,
+                ],
+                "iscrowd": 0,
+                "_synthetic_region": True,
+            })
+        return out
+
     def extract_object_patch(self, img, ann, coco):
         """Extract the cropped RGB patch, cropped binary mask, bbox, and full binary mask.
 
@@ -271,7 +352,10 @@ class CopyMoveGenerator:
 
         # Refine coarse COCO polygon boundaries using GrabCut
         # This removes the "blocky" background chunks from the object mask.
-        if not is_sam and cropped_mask_bin.shape[0] > 10 and cropped_mask_bin.shape[1] > 10:
+        is_synthetic = bool(ann.get("_synthetic_region"))
+        if (not is_sam and not is_synthetic
+                and cropped_mask_bin.shape[0] > 10
+                and cropped_mask_bin.shape[1] > 10):
             gc_mask = np.where(cropped_mask_bin > 0, cv2.GC_PR_FGD, cv2.GC_BGD).astype(np.uint8)
             # Create a "sure foreground" core by eroding the mask
             kernel = np.ones((5,5), np.uint8)
@@ -846,6 +930,21 @@ class CopyMoveGenerator:
             return "SKIP: no_suitable_annotations"
         random.shuffle(ann_pool)
         ann_pool = ann_pool[: max(1, min(self.k_ann, len(ann_pool)))]
+
+        # A fraction of samples copy a polygon rather than an object.
+        # The choice is per sample rather than per candidate, so a row
+        # is wholly one or the other and the two remain separable in
+        # the manifest by source_supercategory.
+        if (self.background_region_prob > 0.0
+                and random.random() < self.background_region_prob):
+            synthetic = self._synthetic_region_anns(
+                image_info, img.shape, random,
+                count=max(1, self.k_ann),
+                area_lo=max(self.min_area_ratio, self.min_area / img_area),
+                area_hi=self.max_area_ratio,
+            )
+            if synthetic:
+                ann_pool = synthetic
 
         for ann in ann_pool:
             patch_data, src_bbox, src_mask_full = \
@@ -1486,7 +1585,12 @@ class CopyMoveGenerator:
                     # ── Category metadata ────────────────────
                     cat_name = "unknown"
                     supercat = "unknown"
+                    if ann.get("_synthetic_region"):
+                        cat_name = "polygon"
+                        supercat = "background"
                     try:
+                        if ann.get("_synthetic_region"):
+                            raise IndexError
                         cat_info = coco.loadCats(src_cat)[0]
                         cat_name = cat_info.get("name", "unknown")
                         supercat = cat_info.get(

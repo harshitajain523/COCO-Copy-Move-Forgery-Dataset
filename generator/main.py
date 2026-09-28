@@ -228,7 +228,9 @@ def run_stage(stage_name, num_images=None, seed=SEED,
               output_dir=None, shard=0, num_shards=1,
               subset_size=None, retry_failed=False,
               extend_variants=False, reuse_sources=False,
-              coco_root=None):
+              coco_root=None, min_area_ratio=None,
+              max_area_ratio=None, gate_profile=None,
+              background_region_prob=None):
     """
     Run dataset generation for a given stage.
 
@@ -247,7 +249,26 @@ def run_stage(stage_name, num_images=None, seed=SEED,
     subset_size : int, optional
         Override the preset's annotation-subset size.
     """
+    # COCO's own object sizes are heavily skewed small, so a single
+    # area window does not give a corpus that covers the range: the
+    # old 2% floor was the only thing making the corpus look
+    # large-region, and removing it hands the distribution straight to
+    # COCO's skew. Generating one band at a time and merging is what
+    # produces coverage. The aim is to span the range the benchmarks
+    # occupy, not to reproduce any one benchmark's histogram, which
+    # would be fitting the corpus to the test set.
     overrides = {}
+    if min_area_ratio is not None:
+        overrides["min_area_ratio"] = float(min_area_ratio)
+    if max_area_ratio is not None:
+        overrides["max_area_ratio"] = float(max_area_ratio)
+        overrides["max_target_area_ratio"] = min(
+            1.0, float(max_area_ratio) * 1.15
+        )
+    if gate_profile is not None:
+        overrides["gate_profile"] = str(gate_profile)
+    if background_region_prob is not None:
+        overrides["background_region_prob"] = float(background_region_prob)
     if num_images is not None:
         overrides["num_images"] = num_images
     if subset_size is not None:
@@ -729,7 +750,8 @@ def main():
     parser.add_argument(
         "--stage", default="stage1",
         choices=["stage1", "stage1_clean", "stage1_recovery",
-                 "stage1_recovery_v2", "stage2", "stage2_synthetic"],
+                 "stage1_recovery_v2", "stage2", "stage2_synthetic",
+                 "stage3", "stage3_transfer"],
         help="Generation stage preset (default: stage1)",
     )
     parser.add_argument(
@@ -787,10 +809,36 @@ def main():
         help="MS-COCO 2017 root containing train2017/ and "
              "annotations/ (default: $COCO_ROOT or ~/coco)",
     )
+    parser.add_argument(
+        "--min-area-ratio", type=float, default=None,
+        help="Override the preset's minimum source-region area, as a "
+             "fraction of image area (band generation)",
+    )
+    parser.add_argument(
+        "--max-area-ratio", type=float, default=None,
+        help="Override the preset's maximum source-region area, as a "
+             "fraction of image area (band generation)",
+    )
+    parser.add_argument(
+        "--background-region-prob", type=float, default=None,
+        help="Override the fraction of samples whose copied region is "
+             "a random polygon rather than an annotated object. Large "
+             "regions are effectively unreachable from annotations, so "
+             "the large band needs most of its samples to be polygons",
+    )
+    parser.add_argument(
+        "--gate-profile", default=None,
+        help="Tag written to every row, so bands generated in "
+             "separate passes stay separable in the manifest",
+    )
     args = parser.parse_args()
 
     successes, stage_output = run_stage(
         args.stage, num_images=args.num_images, seed=args.seed,
+        min_area_ratio=args.min_area_ratio,
+        max_area_ratio=args.max_area_ratio,
+        gate_profile=args.gate_profile,
+        background_region_prob=args.background_region_prob,
         output_dir=args.output_dir,
         shard=args.shard, num_shards=args.num_shards,
         subset_size=args.subset_size, retry_failed=args.retry_failed,
