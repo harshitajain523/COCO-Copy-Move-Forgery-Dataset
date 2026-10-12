@@ -1,7 +1,7 @@
 ---
 license: other
 license_name: per-part-cc
-license_link: LICENSE-DATA
+license_link: https://huggingface.co/datasets/harshitajainn/coco-cmfd/blob/main/LICENSE-DATA
 task_categories:
 - image-segmentation
 - image-classification
