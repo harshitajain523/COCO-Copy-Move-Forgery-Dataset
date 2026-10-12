@@ -4,8 +4,9 @@ A synthetic copy-move forgery dataset built from MS-COCO 2017, with
 ground truth that distinguishes the **source** region (where an object
 was copied from) from the **target** region (where it was pasted).
 
-12,271 forged images, 7,150 distinct source photographs, 64 object
-categories. Every pasted object is placed somewhere the scene actually
+8,245 forged images, 4,788 distinct source photographs, 63 object
+categories, released in four parts by the licence of the source
+photographs (release v1.1; see [Licensing](#license-and-attribution)). Every pasted object is placed somewhere the scene actually
 supports it rather than at a random offset.
 
 - **Dataset:** https://huggingface.co/datasets/harshitajainn/coco-cmfd
@@ -127,7 +128,7 @@ Four ground-truth representations are emitted:
 | Trimap | PNG, 1-ch | `0` bg, `128` source, `255` target | Source/target discrimination (BusterNet-style dual branch) |
 | Binary mask | PNG, 1-ch | `0` / `255` | Standard forgery localisation |
 | Patch labels | int8, H/16 × W/16 | `-1` ignore, `0` bg, `1` source, `2` target | Patch-level / contrastive objectives |
-| Hard negatives | uint8 | `0` / `1` | The scene's *other* real objects — visually similar, but not forgeries |
+| Hard negatives | uint8 | `0` / `1` | The scene's *other* annotated objects — genuine content that must not be flagged |
 
 Patch labels use a strict purity rule: a patch is labelled only if all
 256 pixels share one class, otherwise `-1`. A patch containing even one
@@ -144,14 +145,14 @@ call forgeries.
 
 | | |
 |---|---|
-| Samples | 12,271 |
-| Source images | 7,150 distinct COCO train2017 images (1–8 samples each, mean 1.7) |
-| Categories | 64 COCO categories across 9 supercategories |
-| Resolution | native COCO, 320–640 px per side |
+| Samples | 8,245 (`by` 2,006 · `by-nc` 1,697 · `by-sa` 1,092 · `by-nc-sa` 3,450) |
+| Source images | 4,788 distinct COCO train2017 images (1–8 samples each, mean 1.7) |
+| Categories | 63 COCO categories |
+| Resolution | native COCO, longer side 400–640 px |
 | Image format | PNG, lossless — no JPEG, noise or blur applied |
-| Pasted region size | 2.5%–47.6% of image area (median 8.6%) |
-| Transforms | scale 0.70–1.45, rotation ±10°, flip on 25.1% |
-| Size | 12 GB as generated; 6.4 GB parquet / 9.8 GB WebDataset |
+| Target bounding box | 2.5%–47.6% of image area (median 8.6%) |
+| Transforms | scale 0.70–1.45, rotation ±10°, flip on 24.6% |
+| Size | 4.4 GB parquet / 6.7 GB WebDataset |
 
 Metadata carries 35 fields per sample — transform parameters, source
 category, which placement tier accepted it, texture and background
@@ -171,29 +172,32 @@ that produced them:
 
 | `gate_profile` | Samples | Source-object gates |
 |---|---|---|
-| `strict` | 4,420 | edge margin 15 px, isolation 5×5, bbox fill ≥ 0.25, paste ≥ 2% of image |
-| `relaxed_v1` | 166 | edge 8 px, isolation 3×3, fill ≥ 0.20 |
-| `relaxed_v2` | 7,685 | as `relaxed_v1`, plus paste ≥ 1.2% of image |
+| `strict` | 2,956 | edge margin 15 px, isolation 5×5, bbox fill ≥ 0.25, paste ≥ 2% of image |
+| `relaxed_v1` | 115 | edge 8 px, isolation 3×3, fill ≥ 0.20 |
+| `relaxed_v2` | 5,174 | as `relaxed_v1`, plus paste ≥ 1.2% of image |
 
 **The scene-plausibility gates of stage 3 are identical in all three
 profiles.** Only the selectivity about which objects are worth copying
 differs. Filter to `gate_profile == "strict"` for the most conservative
 subset; use everything for maximum volume.
 
-`source_reused = 1` (4,050 samples) marks a sample whose source object
+`source_reused = 1` (2,723 samples) marks a sample whose source object
 is also the source of another sample from the same image, pasted
 somewhere else. They are legitimate distinct forgeries, but they are
 correlated — cap or drop them if that matters to you.
 
 ## Verification
 
-Reproducible with the included tooling:
+Measured on release v1.0 (12,271 samples), of which v1.1 is a subset;
+`tools/verify_release.py` re-checks v1.1 directly. Reproducible with the
+included tooling:
 
 | Check | Result |
 |---|---|
 | Mask alignment — changed pixels vs. labelled target, 60 samples | IoU mean 1.0000, min 0.9997; 0 pixels changed outside any mask |
 | File integrity | 61,355/61,355 referenced files present; 400 sampled pixel checks pass |
 | Post-hoc plausibility audit | 12,190 clean / 81 rejected (0.66%) — see `metadata_clean.csv` |
+| v1.1, all 8,245 samples vs. original COCO photographs (`tools/verify_release.py`) | IoU mean 0.9999, min 0.9300; 0 pixels changed outside any mask; every licence matches its part |
 
 The audit re-applies the placement rules to finished samples and flags
 support-surface violations, perspective mismatches and segmentation
@@ -213,7 +217,7 @@ python generator/quality_filter.py   output/stage1_full   # writes metadata_clea
 ```python
 from datasets import load_dataset
 
-ds = load_dataset("harshitajainn/coco-cmfd", split="train")
+ds = load_dataset("harshitajainn/coco-cmfd", "all", split="train")   # or "by", "by-nc", "by-sa", "by-nc-sa"
 sample = ds[0]
 sample["image"]        # PIL.Image — forged image
 sample["trimap"]       # PIL.Image — 0 / 128 / 255
@@ -221,7 +225,8 @@ sample["trimap"]       # PIL.Image — 0 / 128 / 255
 
 See [load_example.py](load_example.py) for patch-label reshaping and
 `gate_profile` filtering. WebDataset tar shards are published under
-`wds/` for streaming-heavy pipelines.
+`wds/<part>/` for streaming-heavy pipelines. Load only the parts whose
+licence terms suit your use; every row carries its own `license_name`.
 
 **When constructing splits, group by `image_id`.** Multiple samples
 share a source photograph, so a naive random split leaks.
@@ -241,8 +246,8 @@ share a source photograph, so a naive random split leaks.
   rescaling are out of distribution.
 - **One copy-move per image.** No multi-source, nested or chained
   forgeries.
-- **COCO's category imbalance**, partially capped: person 8.1%, bird
-  7.5%, clock 7.2%.
+- **COCO's category imbalance**, partially capped: person 7.8%, clock
+  7.7%, bird 7.2%.
 - **Plausibility is heuristic.** COCO-Stuff labels are coarse and the
   support-surface test is a footprint probe, not depth estimation.
   Roughly 0.7% of samples still fail the post-hoc audit; they are
@@ -251,7 +256,9 @@ share a source photograph, so a naive random split leaks.
 ## Regenerating
 
 Requires MS-COCO 2017 train images plus `instances_train2017.json` and
-`stuff_train2017.json` (~19 GB).
+`stuff_train2017.json` (~19 GB). The generator skips photographs whose
+licence forbids adaptations (COCO licence ids 3 and 6), so a fresh run
+produces only redistributable samples.
 
 ```bash
 pip install -r requirements.txt
@@ -311,15 +318,23 @@ If you use this dataset, cite it as follows
 ## License and attribution
 
 - **Code** — MIT, see [LICENSE](LICENSE).
-- **Dataset** — CC BY 4.0, see [LICENSE-DATA](LICENSE-DATA).
+- **Dataset** — four parts, each under the licence its source
+  photographs allow; see [LICENSE-DATA](LICENSE-DATA) and
+  [LICENSING.md](LICENSING.md).
 
-The images derive from MS-COCO 2017. COCO *annotations* are CC BY 4.0;
-COCO *images* come from Flickr and remain subject to their owners'
-terms — the COCO Consortium does not hold their copyright. The CC BY
-4.0 grant here covers the forgery generation, ground-truth masks and
-metadata, not the underlying photographic content. Review the
-[COCO terms of use](https://cocodataset.org/#termsofuse) before
-redistributing the imagery, particularly for commercial use.
+| Part | Source photographs | Licence |
+|---|---|---|
+| `by` | CC BY 2.0, no known copyright restrictions | CC BY 4.0 |
+| `by-nc` | CC BY-NC 2.0 | CC BY-NC 4.0 |
+| `by-sa` | CC BY-SA 2.0 | CC BY-SA 4.0 |
+| `by-nc-sa` | CC BY-NC-SA 2.0 | CC BY-NC-SA 4.0 |
+
+COCO *annotations* are CC BY 4.0, but COCO *images* are Flickr
+photographs that keep their owners' licences. Release v1.0 (12,271
+samples, CC BY 4.0) overlooked this; v1.1 removes the 4,026 samples
+built from NoDerivs photographs and licenses the rest by source. Every
+row carries its photograph's licence and Flickr URL for attribution.
+Also credit COCO-Stuff, whose labels drive the placement checks.
 
 On dataset usage, also cite MS-COCO:
 

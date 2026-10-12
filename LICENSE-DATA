@@ -1,51 +1,63 @@
-Creative Commons Attribution 4.0 International (CC BY 4.0)
+COCO-CMFD dataset licence (release v1.1)
 
 Copyright (c) 2026 Harshita Jain
 
-This license applies to the COCO-CMFD DATASET: the generated forged
-images, ground-truth masks (trimap, binary, patch-level, hard-negative)
-and accompanying metadata.
-
-The generation source code in this repository is licensed separately
-under the MIT License; see LICENSE.
+This file covers the COCO-CMFD DATASET: the generated forged images,
+ground-truth masks (trimap, binary, patch-level, hard-negative) and
+metadata. The generation source code is licensed separately under the
+MIT License; see LICENSE.
 
 ================================================================
-Derivation and third-party terms
+Why the dataset has four licences
 ================================================================
 
-The forged images are derived from the MS-COCO 2017 train split
-(https://cocodataset.org). Two distinct upstream terms apply:
+Every sample is an adaptation of exactly one MS-COCO 2017 photograph.
+COCO does not own those photographs: they come from Flickr and keep the
+Creative Commons licence their owners chose, recorded per image in the
+`license` field of instances_train2017.json. A sample can therefore be
+redistributed only on terms its source photograph allows, and because
+ShareAlike licences require adaptations to keep the same licence, no
+single licence covers every sample.
 
-1. COCO ANNOTATIONS (used here for instance masks and stuff labels)
-   are released by the COCO Consortium under CC BY 4.0.
+The release is a collection of four parts. Each part, and the
+contribution of this work within it (the forgery, the masks and the
+metadata), is licensed as follows:
 
-2. COCO IMAGES are sourced from Flickr and remain subject to the
-   terms of their respective owners. The COCO Consortium does not own
-   the copyright of the images and makes them available under the
-   Flickr Terms of Use. Because every image in this dataset is a
-   derivative of a COCO image, downstream users must comply with those
-   terms in addition to this license.
+  Part (config)   Source photographs (COCO licence id)        Licence of the part
+  -------------   -----------------------------------------   ------------------------------
+  by              CC BY 2.0 (4); no known copyright          CC BY 4.0
+                  restrictions (7)
+  by-nc           CC BY-NC 2.0 (2)                            CC BY-NC 4.0
+  by-sa           CC BY-SA 2.0 (5)                            CC BY-SA 4.0
+  by-nc-sa        CC BY-NC-SA 2.0 (1)                         CC BY-NC-SA 4.0
 
-The CC BY 4.0 grant above therefore covers the contribution made by
-this work — the forgery generation, the ground-truth masks, and the
-metadata — and cannot grant rights over the underlying photographic
-content that the author does not hold.
+For the ShareAlike parts, version 4.0 is used because the 2.0
+ShareAlike licences permit adaptations under a later version with the
+same licence elements.
 
-Users intending commercial redistribution of the imagery should
-review the Flickr Terms of Use and the COCO terms at
-https://cocodataset.org/#termsofuse.
+Photographs under CC BY-NC-ND 2.0 (3) or CC BY-ND 2.0 (6) do not permit
+adaptations, and no sample derived from them is distributed.
+
+The photographic content in every sample remains subject to its
+original licence. Each row carries that licence and the attribution
+needed to honour it: coco_image_id, coco_license_id, license_name,
+license_url, flickr_url, coco_url, and modified = true.
 
 ================================================================
-CC BY 4.0 summary
+Attribution
 ================================================================
 
-You are free to:
-  Share  — copy and redistribute the material in any medium or format
-  Adapt  — remix, transform, and build upon the material
-           for any purpose, even commercially.
+When using any part, credit:
+  - the owner of each source photograph (via flickr_url), with its
+    licence (license_name, license_url), noting that it was modified;
+  - this dataset (see the citation in README.md);
+  - the COCO Consortium, whose annotations (CC BY 4.0) define the copied
+    object regions and hard-negative masks;
+  - COCO-Stuff (CC BY 4.0), whose labels were used for the placement
+    checks.
 
-Under the following terms:
-  Attribution — You must give appropriate credit, provide a link to
-  the license, and indicate if changes were made.
-
-Full licence text: https://creativecommons.org/licenses/by/4.0/legalcode
+Full licence texts:
+  CC BY 4.0        https://creativecommons.org/licenses/by/4.0/legalcode
+  CC BY-NC 4.0     https://creativecommons.org/licenses/by-nc/4.0/legalcode
+  CC BY-SA 4.0     https://creativecommons.org/licenses/by-sa/4.0/legalcode
+  CC BY-NC-SA 4.0  https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
